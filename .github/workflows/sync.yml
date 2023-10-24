@@ -1,0 +1,24 @@
+name: Sync Fork Upstream
+
+on:
+  schedule:
+    # - cron: '0 8 * * *' # every day 8am
+    - cron: '0 0 * * 1' # every Monday 00:00
+  workflow_dispatch: # on button click
+
+jobs:
+  sync:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: AbdulmelikKalkan/sync-fork-upstream@v1.3
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+        with:
+        # owner：填写自己Github存储库帐户的名称，例如：Mydong
+          owner: Mydong
+        # repo：填写存储库的名称，例如：chatgpt-web
+          repo: synctv
+        # branch：填写上游的分支的名称，例如：main
+          branch: main
