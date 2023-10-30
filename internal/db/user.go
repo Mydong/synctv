@@ -6,8 +6,6 @@ import (
 
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
-	"github.com/zijiren233/stream"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -53,7 +51,7 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint, con
 			return nil, err
 		}
 	} else {
-		if err := db.First(&user, userProvider.UserID).Error; err != nil {
+		if err := db.Where("id = ?", userProvider.UserID).First(&user).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -61,16 +59,19 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint, con
 	return &user, nil
 }
 
-func GetUserByProvider(p provider.OAuth2Provider, puid uint) (*model.User, error) {
-	u := &model.User{}
-	err := db.Preload("Providers", "provider = ? AND provider_user_id = ?", p, puid).First(u).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return u, errors.New("user not found")
+func GetProviderUserID(p provider.OAuth2Provider, puid uint) (string, error) {
+	var userProvider model.UserProvider
+	if err := db.Where("provider = ? AND provider_user_id = ?", p, puid).First(&userProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", errors.New("user not found")
+		} else {
+			return "", err
+		}
 	}
-	return u, err
+	return userProvider.UserID, nil
 }
 
-func AddUserToRoom(userID uint, roomID uint, role model.RoomRole, permission model.Permission) error {
+func AddUserToRoom(userID, roomID string, role model.RoomRole, permission model.Permission) error {
 	ur := &model.RoomUserRelation{
 		UserID:      userID,
 		RoomID:      roomID,
@@ -99,13 +100,25 @@ func GetUserByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) [
 	return users
 }
 
-func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []uint {
-	var ids []uint
+func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []string {
+	var ids []string
 	db.Model(&model.User{}).Where(`username LIKE ?`, fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Pluck("id", &ids)
 	return ids
 }
 
-func GetUserByID(id uint) (*model.User, error) {
+func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
+	var users []*model.User
+	err := db.Where("id = ? OR username LIKE ?", idOrUsername, fmt.Sprintf("%%%s%%", idOrUsername)).Scopes(scopes...).Find(&users).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return users, errors.New("user not found")
+	}
+	return users, err
+}
+
+func GetUserByID(id string) (*model.User, error) {
+	if len(id) != 36 {
+		return nil, errors.New("user id is not 32 bit")
+	}
 	u := &model.User{}
 	err := db.Where("id = ?", id).First(u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -114,72 +127,166 @@ func GetUserByID(id uint) (*model.User, error) {
 	return u, err
 }
 
-func GetUsersByRoomID(roomID uint, scopes ...func(*gorm.DB) *gorm.DB) ([]model.User, error) {
-	users := []model.User{}
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ?", roomID).Scopes(scopes...).Find(&users).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return users, errors.New("room not found")
+func BanUser(u *model.User) error {
+	if u.Role == model.RoleBanned {
+		return nil
 	}
-	return users, err
+	u.Role = model.RoleBanned
+	return SaveUser(u)
 }
 
-func DeleteUserByID(userID uint) error {
-	err := db.Unscoped().Delete(&model.User{}, userID).Error
+func BanUserByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleBanned).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
 	}
 	return err
 }
 
-func LoadAndDeleteUserByID(userID uint, columns ...clause.Column) (*model.User, error) {
+func UnbanUser(u *model.User) error {
+	if u.Role != model.RoleBanned {
+		return errors.New("user is not banned")
+	}
+	u.Role = model.RoleUser
+	return SaveUser(u)
+}
+
+func UnbanUserByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func DeleteUserByID(userID string) error {
+	err := db.Unscoped().Where("id = ?", userID).Delete(&model.User{}).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func LoadAndDeleteUserByID(userID string, columns ...clause.Column) (*model.User, error) {
 	u := &model.User{}
-	err := db.Unscoped().
+	if db.Unscoped().
 		Clauses(clause.Returning{Columns: columns}).
 		Delete(u, userID).
-		Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+		RowsAffected == 0 {
 		return u, errors.New("user not found")
 	}
-	return u, err
-}
-
-func DeleteUserByUsername(username string) error {
-	err := db.Unscoped().Where("username = ?", username).Delete(&model.User{}).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
-}
-
-func LoadAndDeleteUserByUsername(username string, columns ...clause.Column) (*model.User, error) {
-	u := &model.User{}
-	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("username = ?", username).Delete(u).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return u, errors.New("user not found")
-	}
-	return u, err
-}
-
-func SetUserPassword(userID uint, password string) error {
-	var hashedPassword []byte
-	if password != "" {
-		var err error
-		hashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
-		if err != nil {
-			return err
-		}
-	}
-	return SetUserHashedPassword(userID, hashedPassword)
-}
-
-func SetUserHashedPassword(userID uint, hashedPassword []byte) error {
-	err := db.Model(&model.User{}).Where("id = ?", userID).Update("hashed_password", hashedPassword).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return u, nil
 }
 
 func SaveUser(u *model.User) error {
 	return db.Save(u).Error
+}
+
+func AddAdmin(u *model.User) error {
+	if u.Role >= model.RoleAdmin {
+		return nil
+	}
+	u.Role = model.RoleAdmin
+	return SaveUser(u)
+}
+
+func RemoveAdmin(u *model.User) error {
+	if u.Role < model.RoleAdmin {
+		return nil
+	}
+	u.Role = model.RoleUser
+	return SaveUser(u)
+}
+
+func GetAdmins() []*model.User {
+	var users []*model.User
+	db.Where("role == ?", model.RoleAdmin).Find(&users)
+	return users
+}
+
+func AddAdminByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleAdmin).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func RemoveAdminByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func AddRoot(u *model.User) error {
+	if u.Role == model.RoleRoot {
+		return nil
+	}
+	u.Role = model.RoleRoot
+	return SaveUser(u)
+}
+
+func RemoveRoot(u *model.User) error {
+	if u.Role != model.RoleRoot {
+		return nil
+	}
+	u.Role = model.RoleUser
+	return SaveUser(u)
+}
+
+func AddRootByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleRoot).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func RemoveRootByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func GetRoots() []*model.User {
+	var users []*model.User
+	db.Where("role = ?", model.RoleRoot).Find(&users)
+	return users
+}
+
+func SetRole(u *model.User, role model.Role) error {
+	u.Role = role
+	return SaveUser(u)
+}
+
+func SetRoleByID(userID string, role model.Role) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", role).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func GetAllUserWithRoleUser(role model.Role, scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
+	users := []*model.User{}
+	db.Where("role = ?", role).Scopes(scopes...).Find(&users)
+	return users
+}
+
+func GetAllUserCountWithRole(role model.Role, scopes ...func(*gorm.DB) *gorm.DB) int64 {
+	var count int64
+	db.Model(&model.User{}).Where("role = ?", role).Scopes(scopes...).Count(&count)
+	return count
+}
+
+func SetUsernameByID(userID string, username string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("username", username).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/public"
+	Vbilibili "github.com/synctv-org/synctv/server/handlers/vendors/bilibili"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
 )
@@ -38,8 +39,26 @@ func Init(e *gin.Engine) {
 		}
 
 		{
-			// TODO: admin api implement
-			// admin := api.Group("/admin")
+			admin := api.Group("/admin")
+			root := api.Group("/admin")
+			admin.Use(middlewares.AuthAdminMiddleware)
+			root.Use(middlewares.AuthRootMiddleware)
+
+			{
+				admin.GET("/settings/:group", AdminSettings)
+
+				admin.POST("/settings", EditAdminSettings)
+
+				admin.GET("/users", Users)
+			}
+
+			{
+				root.GET("/admins", Admins)
+
+				root.POST("/addAdmin", AddAdmin)
+
+				root.POST("deleteAdmin", DeleteAdmin)
+			}
 		}
 
 		{
@@ -88,16 +107,16 @@ func Init(e *gin.Engine) {
 
 			needAuthMovie.POST("/clear", ClearMovies)
 
-			movie.HEAD("/proxy/:roomId/:pullKey", ProxyMovie)
+			movie.HEAD("/proxy/:roomId/:movieId", ProxyMovie)
 
-			movie.GET("/proxy/:roomId/:pullKey", ProxyMovie)
+			movie.GET("/proxy/:roomId/:movieId", ProxyMovie)
 
 			{
 				live := needAuthMovie.Group("/live")
 
 				live.POST("/publishKey", NewPublishKey)
 
-				live.GET("/*pullKey", JoinLive)
+				live.GET("/*movieId", JoinLive)
 			}
 		}
 
@@ -110,6 +129,22 @@ func Init(e *gin.Engine) {
 			needAuthUser.GET("/me", Me)
 
 			needAuthUser.GET("/rooms", UserRooms)
+
+			needAuthUser.POST("/username", SetUsername)
+		}
+
+		{
+			vendor := needAuthUserApi.Group("/vendor")
+
+			{
+				bilibili := vendor.Group("/bilibili")
+
+				bilibili.GET("/qr", Vbilibili.QRCode)
+
+				bilibili.POST("/login", Vbilibili.Login)
+
+				bilibili.POST("/parse", Vbilibili.Parse)
+			}
 		}
 	}
 }

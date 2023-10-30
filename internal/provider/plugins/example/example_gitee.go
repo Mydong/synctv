@@ -7,6 +7,7 @@ import (
 
 	plugin "github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"golang.org/x/oauth2"
 )
 
@@ -24,7 +25,7 @@ import (
 //				redirect_url: xxx
 //		plugins:
 //			- plugin_file: plugins/oauth2/gitee
-//			arges: []
+//			  arges: []
 type GiteeProvider struct {
 	config oauth2.Config
 }
@@ -85,10 +86,10 @@ type giteeUserInfo struct {
 
 func main() {
 	var pluginMap = map[string]plugin.Plugin{
-		"Provider": &provider.ProviderPlugin{Impl: &GiteeProvider{}},
+		"Provider": &plugins.ProviderPlugin{Impl: &GiteeProvider{}},
 	}
 	plugin.Serve(&plugin.ServeConfig{
-		HandshakeConfig: provider.HandshakeConfig,
+		HandshakeConfig: plugins.HandshakeConfig,
 		Plugins:         pluginMap,
 		GRPCServer:      plugin.DefaultGRPCServer,
 	})

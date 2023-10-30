@@ -44,7 +44,7 @@ func newStatus() Status {
 func (c *current) Current() Current {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	c.current.updateSeek()
+	c.current.UpdateSeek()
 	return c.current
 }
 
@@ -67,7 +67,7 @@ func (c *current) SetMovie(movie model.Movie) {
 func (c *current) Status() Status {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	c.current.updateSeek()
+	c.current.UpdateSeek()
 	return c.current.Status
 }
 
@@ -88,7 +88,7 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 func (c *Current) Proto() *pb.Current {
 	return &pb.Current{
 		Movie: &pb.MovieInfo{
-			Id: uint64(c.Movie.ID),
+			Id: c.Movie.ID,
 			Base: &pb.BaseMovieInfo{
 				Url:        c.Movie.Base.Url,
 				Name:       c.Movie.Base.Name,
@@ -98,7 +98,6 @@ func (c *Current) Proto() *pb.Current {
 				Type:       c.Movie.Base.Type,
 				Headers:    c.Movie.Base.Headers,
 			},
-			PullKey:   c.Movie.PullKey,
 			CreatedAt: c.Movie.CreatedAt.UnixMilli(),
 			Creator:   GetUserName(c.Movie.CreatorID),
 		},
@@ -110,7 +109,7 @@ func (c *Current) Proto() *pb.Current {
 	}
 }
 
-func (c *Current) updateSeek() {
+func (c *Current) UpdateSeek() {
 	if c.Movie.Base.Live {
 		c.Status.lastUpdate = time.Now()
 		return

@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -19,13 +20,13 @@ var (
 )
 
 type AuthClaims struct {
-	UserId uint `json:"u"`
+	UserId string `json:"u"`
 	jwt.RegisteredClaims
 }
 
 type AuthRoomClaims struct {
 	AuthClaims
-	RoomId  uint   `json:"r"`
+	RoomId  string `json:"r"`
 	Version uint32 `json:"rv"`
 }
 
@@ -63,17 +64,23 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 		return nil, nil, err
 	}
 
-	if claims.RoomId == 0 {
+	if len(claims.RoomId) != 36 {
 		return nil, nil, ErrAuthFailed
 	}
 
-	if claims.UserId == 0 {
+	if len(claims.UserId) != 36 {
 		return nil, nil, ErrAuthFailed
 	}
 
 	u, err := op.GetUserById(claims.UserId)
 	if err != nil {
 		return nil, nil, err
+	}
+	if u.IsBanned() {
+		return nil, nil, errors.New("user banned")
+	}
+	if u.IsPending() {
+		return nil, nil, errors.New("user is pending, need admin to approve")
 	}
 
 	r, err := op.LoadOrInitRoomByID(claims.RoomId)
@@ -93,7 +100,7 @@ func AuthUser(Authorization string) (*op.User, error) {
 		return nil, err
 	}
 
-	if claims.UserId == 0 {
+	if len(claims.UserId) != 36 {
 		return nil, ErrAuthFailed
 	}
 
@@ -101,11 +108,45 @@ func AuthUser(Authorization string) (*op.User, error) {
 	if err != nil {
 		return nil, err
 	}
+	if u.IsBanned() {
+		return nil, errors.New("user banned")
+	}
+	if u.IsPending() {
+		return nil, errors.New("user is pending, need admin to approve")
+	}
 
 	return u, nil
 }
 
+func AuthAdmin(Authorization string) (*op.User, error) {
+	u, err := AuthUser(Authorization)
+	if err != nil {
+		return nil, err
+	}
+	if !u.IsAdmin() {
+		return nil, errors.New("user is not admin")
+	}
+	return u, nil
+}
+
+func AuthRoot(Authorization string) (*op.User, error) {
+	u, err := AuthUser(Authorization)
+	if err != nil {
+		return nil, err
+	}
+	if !u.IsRoot() {
+		return nil, errors.New("user is not admin")
+	}
+	return u, nil
+}
+
 func NewAuthUserToken(user *op.User) (string, error) {
+	if user.IsBanned() {
+		return "", errors.New("user banned")
+	}
+	if user.IsPending() {
+		return "", errors.New("user is pending, need admin to approve")
+	}
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
 	if err != nil {
 		return "", err
@@ -121,6 +162,12 @@ func NewAuthUserToken(user *op.User) (string, error) {
 }
 
 func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
+	if user.IsBanned() {
+		return "", errors.New("user banned")
+	}
+	if user.IsPending() {
+		return "", errors.New("user is pending, need admin to approve")
+	}
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
 	if err != nil {
 		return "", err
@@ -142,7 +189,7 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 func AuthRoomMiddleware(ctx *gin.Context) {
 	user, room, err := AuthRoom(ctx.GetHeader("Authorization"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(401, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -154,7 +201,29 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 func AuthUserMiddleware(ctx *gin.Context) {
 	user, err := AuthUser(ctx.GetHeader("Authorization"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(401, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Set("user", user)
+	ctx.Next()
+}
+
+func AuthAdminMiddleware(ctx *gin.Context) {
+	user, err := AuthAdmin(ctx.GetHeader("Authorization"))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Set("user", user)
+	ctx.Next()
+}
+
+func AuthRootMiddleware(ctx *gin.Context) {
+	user, err := AuthRoot(ctx.GetHeader("Authorization"))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 		return
 	}
 

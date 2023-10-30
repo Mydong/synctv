@@ -13,8 +13,11 @@ import (
 func Me(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"username": user.Username,
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(&model.UserInfoResp{
+		ID:        user.ID,
+		Username:  user.Username,
+		Role:      user.Role,
+		CreatedAt: user.CreatedAt.UnixMilli(),
 	}))
 }
 
@@ -42,7 +45,6 @@ func UserRooms(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	resp := make([]*model.RoomListResp, 0, pageSize)
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
@@ -101,10 +103,26 @@ func UserRooms(ctx *gin.Context) {
 		return
 	}
 
-	resp = genRoomListResp(resp, append(scopes, db.Paginate(page, pageSize))...)
-
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": db.GetAllRoomsWithoutHiddenCount(scopes...),
-		"list":  resp,
+		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
+}
+
+func SetUsername(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	var req model.SetUsernameReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err := user.SetUsername(req.Username)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
 }

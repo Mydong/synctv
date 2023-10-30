@@ -4,15 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/vec"
 	"gorm.io/gorm"
 )
 
@@ -30,6 +29,17 @@ func (e FormatErrNotSupportPosition) Error() string {
 
 func CreateRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
+
+	v, err := settings.DisableCreateRoom.Get()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	if v && !user.IsAdmin() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("create room is disabled"))
+		return
+	}
+
 	req := model.CreateRoomReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -63,31 +73,23 @@ func RoomHotList(ctx *gin.Context) {
 		return
 	}
 
-	r := op.GetAllRoomsInCacheWithoutHidden()
-	rs := vec.New[*model.RoomListResp](vec.WithCmpLess[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
-		return v1.PeopleNum < v2.PeopleNum
-	}), vec.WithCmpEqual[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
-		return v1.PeopleNum == v2.PeopleNum
-	}))
-	for _, v := range r {
-		rs.Push(&model.RoomListResp{
+	r := op.GetRoomHeapInCacheWithoutHidden()
+	rs := utils.GetPageItems(r, page, pageSize)
+	resp := make([]*model.RoomListResp, len(rs))
+	for i, v := range rs {
+		resp[i] = &model.RoomListResp{
 			RoomId:       v.ID,
-			RoomName:     v.Name,
-			PeopleNum:    v.ClientNum(),
-			NeedPassword: v.NeedPassword(),
-			Creator:      op.GetUserName(v.Room.CreatorID),
-			CreatedAt:    v.Room.CreatedAt.UnixMilli(),
-		})
-	}
-
-	rs.SortStable()
-	if ctx.DefaultQuery("sort", "desc") == "desc" {
-		rs.Reverse()
+			RoomName:     v.RoomName,
+			PeopleNum:    v.ClientNum,
+			NeedPassword: v.NeedPassword,
+			Creator:      op.GetUserName(v.CreatorID),
+			CreatedAt:    v.CreatedAt.UnixMilli(),
+		}
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": rs.Len(),
-		"list":  utils.GetPageItems(rs.Slice(), page, pageSize),
+		"total": len(r),
+		"list":  rs,
 	}))
 }
 
@@ -102,7 +104,6 @@ func RoomList(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	resp := make([]*model.RoomListResp, 0, pageSize)
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
@@ -165,36 +166,30 @@ func RoomList(ctx *gin.Context) {
 		return
 	}
 
-	resp = genRoomListResp(resp, append(scopes, db.Paginate(page, pageSize))...)
-
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": db.GetAllRoomsWithoutHiddenCount(scopes...),
-		"list":  resp,
+		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }
 
-func genRoomListResp(resp []*model.RoomListResp, scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
-	for _, r := range db.GetAllRoomsWithoutHidden(scopes...) {
-		resp = append(resp, &model.RoomListResp{
+func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
+	rs := db.GetAllRoomsWithoutHidden(scopes...)
+	resp := make([]*model.RoomListResp, len(rs))
+	for i, r := range rs {
+		resp[i] = &model.RoomListResp{
 			RoomId:       r.ID,
 			RoomName:     r.Name,
 			PeopleNum:    op.ClientNum(r.ID),
 			NeedPassword: len(r.HashedPassword) != 0,
 			Creator:      op.GetUserName(r.CreatorID),
 			CreatedAt:    r.CreatedAt.UnixMilli(),
-		})
+		}
 	}
 	return resp
 }
 
 func CheckRoom(ctx *gin.Context) {
-	id, err := strconv.Atoi(ctx.Query("roomId"))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	r, err := db.GetRoomByID(uint(id))
+	r, err := db.GetRoomByID(ctx.Query("roomId"))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return

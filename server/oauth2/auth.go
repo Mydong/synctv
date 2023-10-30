@@ -5,8 +5,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/internal/db"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/synctv-org/synctv/internal/provider/providers"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
@@ -16,7 +20,7 @@ import (
 func OAuth2(ctx *gin.Context) {
 	t := ctx.Param("type")
 
-	pi, err := provider.GetProvider(provider.OAuth2Provider(t))
+	pi, err := providers.GetProvider(provider.OAuth2Provider(t))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -30,7 +34,7 @@ func OAuth2(ctx *gin.Context) {
 
 func OAuth2Api(ctx *gin.Context) {
 	t := ctx.Param("type")
-	pi, err := provider.GetProvider(provider.OAuth2Provider(t))
+	pi, err := providers.GetProvider(provider.OAuth2Provider(t))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 	}
@@ -64,7 +68,7 @@ func OAuth2Callback(ctx *gin.Context) {
 	}
 
 	p := provider.OAuth2Provider(ctx.Param("type"))
-	pi, err := provider.GetProvider(p)
+	pi, err := providers.GetProvider(p)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -82,7 +86,27 @@ func OAuth2Callback(ctx *gin.Context) {
 		return
 	}
 
-	user, err := op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
+	disable, err := settings.DisableUserSignup.Get()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	var user *op.User
+	if disable {
+		user, err = op.GetUserByProvider(p, ui.ProviderUserID)
+	} else {
+		var review bool
+		review, err = settings.SignupNeedReview.Get()
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		if review {
+			user, err = op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID, db.WithRole(dbModel.RolePending))
+		} else {
+			user, err = op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
+		}
+	}
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -112,7 +136,7 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 	}
 
 	p := provider.OAuth2Provider(ctx.Param("type"))
-	pi, err := provider.GetProvider(p)
+	pi, err := providers.GetProvider(p)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 	}
@@ -129,7 +153,17 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 		return
 	}
 
-	user, err := op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
+	disable, err := settings.DisableUserSignup.Get()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	var user *op.User
+	if disable {
+		user, err = op.GetUserByProvider(p, ui.ProviderUserID)
+	} else {
+		user, err = op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
+	}
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
