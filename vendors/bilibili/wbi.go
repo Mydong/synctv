@@ -3,16 +3,17 @@ package bilibili
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/utils"
+	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
 )
 
 var (
@@ -22,17 +23,25 @@ var (
 		61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
 		36, 20, 34, 44, 52,
 	}
-	lock           sync.RWMutex
-	imgKey, subKey string
-	lastUpdateTime time.Time
+	wbiCache = refreshcache.NewRefreshCache[key](func() (key, error) {
+		imgKey, subKey, err := getWbiKeys()
+		if err != nil {
+			return key{}, err
+		}
+		return key{imgKey, subKey}, nil
+	}, time.Minute*10)
 )
+
+type key struct {
+	imgKey, subKey string
+}
 
 func signAndGenerateURL(urlStr string) (string, error) {
 	urlObj, err := url.Parse(urlStr)
 	if err != nil {
 		return "", err
 	}
-	imgKey, subKey, err := getWbiKeysCached()
+	key, err := wbiCache.Get()
 	if err != nil {
 		return "", err
 	}
@@ -41,7 +50,7 @@ func signAndGenerateURL(urlStr string) (string, error) {
 	for k, v := range query {
 		params[k] = v[0]
 	}
-	newParams := encWbi(params, imgKey, subKey)
+	newParams := encWbi(params, key.imgKey, key.subKey)
 	for k, v := range newParams {
 		query.Set(k, v)
 	}
@@ -94,27 +103,6 @@ func sanitizeString(s string) string {
 	return s
 }
 
-func getWbiKeysCached() (string, string, error) {
-	lock.RLock()
-	if time.Since(lastUpdateTime).Minutes() < 10 {
-		defer lock.RUnlock()
-		return imgKey, subKey, nil
-	}
-	lock.RUnlock()
-	lock.Lock()
-	defer lock.Unlock()
-	if time.Since(lastUpdateTime).Minutes() < 10 {
-		return imgKey, subKey, nil
-	}
-	var err error
-	imgKey, subKey, err = getWbiKeys()
-	if err != nil {
-		return "", "", err
-	}
-	lastUpdateTime = time.Now()
-	return imgKey, subKey, nil
-}
-
 func getWbiKeys() (string, string, error) {
 	req, err := http.NewRequest(http.MethodGet, "https://api.bilibili.com/x/web-interface/nav", nil)
 	if err != nil {
@@ -127,10 +115,13 @@ func getWbiKeys() (string, string, error) {
 		return "", "", err
 	}
 	defer resp.Body.Close()
-	info := wbi{}
+	info := Nav{}
 	err = json.NewDecoder(resp.Body).Decode(&info)
 	if err != nil {
 		return "", "", err
+	}
+	if info.Data.WbiImg.ImgURL == "" || info.Data.WbiImg.SubURL == "" {
+		return "", "", errors.New(info.Message)
 	}
 
 	imgKey := strings.Split(strings.Split(info.Data.WbiImg.ImgURL, "/")[len(strings.Split(info.Data.WbiImg.ImgURL, "/"))-1], ".")[0]

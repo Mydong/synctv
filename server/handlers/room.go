@@ -4,14 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
+	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
 	"gorm.io/gorm"
 )
 
@@ -30,12 +33,7 @@ func (e FormatErrNotSupportPosition) Error() string {
 func CreateRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	v, err := settings.DisableCreateRoom.Get()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-	if v && !user.IsAdmin() {
+	if settings.DisableCreateRoom.Get() && !user.IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("create room is disabled"))
 		return
 	}
@@ -52,7 +50,7 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, _ := op.LoadOrInitRoom(r)
+	room, _ := op.LoadOrInitRoomByID(r.ID)
 
 	token, err := middlewares.NewAuthRoomToken(user, room)
 	if err != nil {
@@ -66,6 +64,10 @@ func CreateRoom(ctx *gin.Context) {
 	}))
 }
 
+var roomHotCache = refreshcache.NewRefreshCache[[]*op.RoomInfo](func() ([]*op.RoomInfo, error) {
+	return op.GetRoomHeapInCacheWithoutHidden(), nil
+}, time.Second*3)
+
 func RoomHotList(ctx *gin.Context) {
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
@@ -73,19 +75,8 @@ func RoomHotList(ctx *gin.Context) {
 		return
 	}
 
-	r := op.GetRoomHeapInCacheWithoutHidden()
+	r, _ := roomHotCache.Get()
 	rs := utils.GetPageItems(r, page, pageSize)
-	resp := make([]*model.RoomListResp, len(rs))
-	for i, v := range rs {
-		resp[i] = &model.RoomListResp{
-			RoomId:       v.ID,
-			RoomName:     v.RoomName,
-			PeopleNum:    v.ClientNum,
-			NeedPassword: v.NeedPassword,
-			Creator:      op.GetUserName(v.CreatorID),
-			CreatedAt:    v.CreatedAt.UnixMilli(),
-		}
-	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": len(r),
@@ -94,11 +85,6 @@ func RoomHotList(ctx *gin.Context) {
 }
 
 func RoomList(ctx *gin.Context) {
-	order := ctx.Query("order")
-	if order == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
-		return
-	}
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -107,73 +93,51 @@ func RoomList(ctx *gin.Context) {
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
-	// search mode, all, name, creator
-	var search = ctx.DefaultQuery("search", "all")
+	scopes := []func(db *gorm.DB) *gorm.DB{
+		db.WhereRoomSettingWithoutHidden(),
+		db.WhereStatus(dbModel.RoomStatusActive),
+	}
 
-	scopes := []func(db *gorm.DB) *gorm.DB{}
-
-	switch order {
+	switch ctx.DefaultQuery("order", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
 		} else {
 			scopes = append(scopes, db.OrderByCreatedAtAsc)
 		}
-		if keyword := ctx.Query("keyword"); keyword != "" {
-			switch search {
-			case "all":
-				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
-			case "name":
-				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
-			}
-		}
-	case "roomName":
+	case "name":
 		if desc {
 			scopes = append(scopes, db.OrderByDesc("name"))
 		} else {
 			scopes = append(scopes, db.OrderByAsc("name"))
-		}
-		if keyword := ctx.Query("keyword"); keyword != "" {
-			switch search {
-			case "all":
-				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
-			case "name":
-				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
-			}
-		}
-	case "roomId":
-		if desc {
-			scopes = append(scopes, db.OrderByIDDesc)
-		} else {
-			scopes = append(scopes, db.OrderByIDAsc)
-		}
-		if keyword := ctx.Query("keyword"); keyword != "" {
-			switch search {
-			case "all":
-				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
-			case "name":
-				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
-			}
 		}
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
 		return
 	}
 
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		// search mode, all, name, creator
+		switch ctx.DefaultQuery("search", "all") {
+		case "all":
+			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, db.GerUsersIDByUsernameLike(keyword), keyword))
+		case "name":
+			scopes = append(scopes, db.WhereRoomNameLike(keyword))
+		case "creator":
+			scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+		case "id":
+			scopes = append(scopes, db.WhereIDLike(keyword))
+		}
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllRoomsWithoutHiddenCount(scopes...),
+		"total": db.GetAllRoomsCount(scopes...),
 		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }
 
 func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
-	rs := db.GetAllRoomsWithoutHidden(scopes...)
+	rs := db.GetAllRooms(scopes...)
 	resp := make([]*model.RoomListResp, len(rs))
 	for i, r := range rs {
 		resp[i] = &model.RoomListResp{

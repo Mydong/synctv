@@ -1,28 +1,46 @@
 package bilibili
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	json "github.com/json-iterator/go"
+	"github.com/zencoder/go-dash/v3/mpd"
 )
 
 type VideoPageInfo struct {
 	Title      string       `json:"title"`
-	CoverImage string       `json:"coverImage"`
 	Actors     string       `json:"actors"`
 	VideoInfos []*VideoInfo `json:"videoInfos"`
 }
 
 type VideoInfo struct {
 	Bvid       string `json:"bvid,omitempty"`
-	Cid        int    `json:"cid,omitempty"`
+	Cid        uint   `json:"cid,omitempty"`
 	Epid       uint   `json:"epid,omitempty"`
 	Name       string `json:"name"`
 	CoverImage string `json:"coverImage"`
 }
 
-func (c *Client) ParseVideoPage(aid uint, bvid string) (*VideoPageInfo, error) {
+type ParseVideoPageConf struct {
+	GetSections bool
+}
+
+type ParseVideoPageConfig func(*ParseVideoPageConf)
+
+func WithGetSections(GetSections bool) ParseVideoPageConfig {
+	return func(c *ParseVideoPageConf) {
+		c.GetSections = GetSections
+	}
+}
+
+func (c *Client) ParseVideoPage(aid uint, bvid string, conf ...ParseVideoPageConfig) (*VideoPageInfo, error) {
+	config := &ParseVideoPageConf{}
+	for _, v := range conf {
+		v(config)
+	}
 	var url string
 	if aid != 0 {
 		url = fmt.Sprintf("https://api.bilibili.com/x/web-interface/view?aid=%d", aid)
@@ -45,20 +63,39 @@ func (c *Client) ParseVideoPage(aid uint, bvid string) (*VideoPageInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	// TODO: error message
-	r := &VideoPageInfo{
-		Title:      info.Data.Title,
-		CoverImage: info.Data.Pic,
-		Actors:     info.Data.Owner.Name,
-		VideoInfos: make([]*VideoInfo, 0, len(info.Data.Pages)),
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
 	}
-	for _, page := range info.Data.Pages {
-		r.VideoInfos = append(r.VideoInfos, &VideoInfo{
-			Bvid:       info.Data.Bvid,
-			Cid:        page.Cid,
-			Name:       page.Part,
-			CoverImage: page.FirstFrame,
-		})
+	r := &VideoPageInfo{
+		Title:  info.Data.Title,
+		Actors: info.Data.Owner.Name,
+	}
+
+	if config.GetSections && len(info.Data.UgcSeason.Sections) != 0 {
+		r.Title = info.Data.UgcSeason.Title
+		for _, v := range info.Data.UgcSeason.Sections {
+			for _, episode := range v.Episodes {
+				r.VideoInfos = append(r.VideoInfos, &VideoInfo{
+					Bvid:       episode.Bvid,
+					Cid:        episode.Cid,
+					Name:       episode.Title,
+					CoverImage: episode.Arc.Pic,
+				})
+			}
+		}
+	} else {
+		r.VideoInfos = make([]*VideoInfo, len(info.Data.Pages))
+		if len(info.Data.Pages) == 1 {
+			info.Data.Pages[0].Part = info.Data.Title
+		}
+		for i, page := range info.Data.Pages {
+			r.VideoInfos[i] = &VideoInfo{
+				Bvid:       info.Data.Bvid,
+				Cid:        page.Cid,
+				Name:       page.Part,
+				CoverImage: info.Data.Pic,
+			}
+		}
 	}
 	return r, nil
 }
@@ -88,6 +125,12 @@ type GetVideoURLConf struct {
 	Quality uint
 }
 
+func (c *GetVideoURLConf) fix() {
+	if c.Quality == 0 {
+		c.Quality = Q1080PP
+	}
+}
+
 type GetVideoURLConfig func(*GetVideoURLConf)
 
 func WithQuality(q uint) GetVideoURLConfig {
@@ -104,6 +147,8 @@ func (c *Client) GetVideoURL(aid uint, bvid string, cid uint, conf ...GetVideoUR
 	for _, v := range conf {
 		v(config)
 	}
+	config.fix()
+
 	var url string
 	if aid != 0 {
 		url = fmt.Sprintf("https://api.bilibili.com/x/player/wbi/playurl?aid=%d&cid=%d&qn=%d&platform=html5&high_quality=1", aid, cid, config.Quality)
@@ -126,12 +171,158 @@ func (c *Client) GetVideoURL(aid uint, bvid string, cid uint, conf ...GetVideoUR
 	if err != nil {
 		return nil, err
 	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
 	return &VideoURL{
 		AcceptDescription: info.Data.AcceptDescription,
 		AcceptQuality:     info.Data.AcceptQuality,
 		CurrentQuality:    info.Data.Quality,
 		URL:               info.Data.Durl[0].URL,
 	}, nil
+}
+
+type GetDashVideoURLConf struct {
+	HDR            bool
+	Need4K         bool
+	NeedDOLBY      bool
+	NeedDOLBYAudio bool
+	Need8K         bool
+	NeedAV1        bool
+}
+
+type GetDashVideoURLConfig func(*GetDashVideoURLConf)
+
+func WithHDR(hdr bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.HDR = hdr
+	}
+}
+
+func WithNeed4K(need4k bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.Need4K = need4k
+	}
+}
+
+func WithNeedDOLBY(needDOLBY bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.NeedDOLBY = needDOLBY
+	}
+}
+
+func WithNeedDOLBYAudio(needDOLBYAudio bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.NeedDOLBYAudio = needDOLBYAudio
+	}
+}
+
+func WithNeed8K(need8k bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.Need8K = need8k
+	}
+}
+
+// https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/video/videostream_url.md
+func (c *Client) GetDashVideoURL(aid uint, bvid string, cid uint, conf ...GetDashVideoURLConfig) (*mpd.MPD, error) {
+	config := &GetDashVideoURLConf{}
+	for _, v := range conf {
+		v(config)
+	}
+
+	var (
+		fnval    uint = 16
+		extQuery string
+	)
+	if config.Need4K {
+		fnval = 128
+		extQuery = "&fourk=1"
+	} else if config.Need8K {
+		fnval = 1024
+	}
+
+	if config.HDR {
+		fnval |= 64
+	}
+	if config.NeedDOLBY {
+		fnval |= 512
+	}
+	if config.NeedDOLBYAudio {
+		fnval |= 256
+	}
+	if config.NeedAV1 {
+		fnval |= 2048
+	}
+
+	var url string
+	if aid != 0 {
+		url = fmt.Sprintf("https://api.bilibili.com/x/player/wbi/playurl?aid=%d&cid=%d&fnver=0&platform=pc&fnval=%d%s", aid, cid, fnval, extQuery)
+	} else if bvid != "" {
+		url = fmt.Sprintf("https://api.bilibili.com/x/player/wbi/playurl?bvid=%s&cid=%d&fnver=0&platform=pc&fnval=%d%s", bvid, cid, fnval, extQuery)
+	} else {
+		return nil, fmt.Errorf("aid and bvid are both empty")
+	}
+	req, err := c.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	info := dashResp{}
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	if err != nil {
+		return nil, err
+	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
+	m := mpd.NewMPD(mpd.DASH_PROFILE_ONDEMAND, fmt.Sprintf("PT%.2fS", info.Data.Dash.Duration), fmt.Sprintf("PT%.2fS", info.Data.Dash.MinBufferTime))
+
+	var as *mpd.AdaptationSet
+	for _, v := range info.Data.Dash.Video {
+		as, err = m.AddNewAdaptationSetVideo(v.MimeType, "progressive", true, v.StartWithSap)
+		if err != nil {
+			return nil, err
+		}
+		video, err := as.AddNewRepresentationVideo(v.Bandwidth, v.Codecs, fmt.Sprint(time.Now().UnixMicro()), v.FrameRate, v.Width, v.Height)
+		if err != nil {
+			return nil, err
+		}
+		video.Sar = &v.Sar
+		err = video.AddNewBaseURL(v.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		_, err = video.AddNewSegmentBase(v.SegmentBase.IndexRange, v.SegmentBase.Initialization)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	as = nil
+	for _, a := range info.Data.Dash.Audio {
+		as, err = m.AddNewAdaptationSetAudio(a.MimeType, true, a.StartWithSap, "und")
+		if err != nil {
+			return nil, err
+		}
+		audio, err := as.AddNewRepresentationAudio(44100, a.Bandwidth, a.Codecs, fmt.Sprint(time.Now().UnixMicro()))
+		if err != nil {
+			return nil, err
+		}
+		audio.Sar = &a.Sar
+		err = audio.AddNewBaseURL(a.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		_, err = audio.AddNewSegmentBase(a.SegmentBase.IndexRange, a.SegmentBase.Initialization)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
 }
 
 type Subtitle struct {
@@ -161,6 +352,9 @@ func (c *Client) GetSubtitles(aid uint, bvid string, cid uint) ([]*Subtitle, err
 	err = json.NewDecoder(resp.Body).Decode(&info)
 	if err != nil {
 		return nil, err
+	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
 	}
 	r := make([]*Subtitle, len(info.Data.Subtitle.Subtitles))
 	for i, s := range info.Data.Subtitle.Subtitles {
@@ -196,10 +390,12 @@ func (c *Client) ParsePGCPage(epId, season_id uint) (*VideoPageInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
 
 	r := &VideoPageInfo{
 		Title:      info.Result.Title,
-		CoverImage: info.Result.Cover,
 		Actors:     info.Result.Actors,
 		VideoInfos: make([]*VideoInfo, len(info.Result.Episodes)),
 	}
@@ -222,6 +418,7 @@ func (c *Client) GetPGCURL(ep_id, cid uint, conf ...GetVideoURLConfig) (*VideoUR
 	for _, v := range conf {
 		v(config)
 	}
+	config.fix()
 
 	var url string
 	if ep_id != 0 {
@@ -246,10 +443,115 @@ func (c *Client) GetPGCURL(ep_id, cid uint, conf ...GetVideoURLConfig) (*VideoUR
 	if err != nil {
 		return nil, err
 	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
+
 	return &VideoURL{
 		AcceptDescription: info.Result.AcceptDescription,
 		AcceptQuality:     info.Result.AcceptQuality,
 		CurrentQuality:    info.Result.Quality,
 		URL:               info.Result.Durl[0].URL,
 	}, nil
+}
+
+func (c *Client) GetDashPGCURL(ep_id, cid uint, conf ...GetDashVideoURLConfig) (*mpd.MPD, error) {
+	config := &GetDashVideoURLConf{}
+	for _, v := range conf {
+		v(config)
+	}
+
+	var (
+		fnval    uint = 16
+		extQuery string
+	)
+	if config.Need4K {
+		fnval = 128
+		extQuery = "&fourk=1"
+	} else if config.Need8K {
+		fnval = 1024
+	}
+
+	if config.HDR {
+		fnval |= 64
+	}
+	if config.NeedDOLBY {
+		fnval |= 512
+	}
+	if config.NeedDOLBYAudio {
+		fnval |= 256
+	}
+	if config.NeedAV1 {
+		fnval |= 2048
+	}
+
+	var url string
+	if ep_id != 0 {
+		url = fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?ep_id=%d&fnval=%d%s", ep_id, fnval, extQuery)
+	} else if cid != 0 {
+		url = fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?cid=%d&fnval=%d%s", ep_id, fnval, extQuery)
+	} else {
+		return nil, fmt.Errorf("edId and season_id are both empty")
+	}
+	req, err := c.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	info := dashPGCResp{}
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	if err != nil {
+		return nil, err
+	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
+	m := mpd.NewMPD(mpd.DASH_PROFILE_ONDEMAND, fmt.Sprintf("PT%.2fS", info.Result.Dash.Duration), fmt.Sprintf("PT%.2fS", info.Result.Dash.MinBufferTime))
+
+	var as *mpd.AdaptationSet
+	for _, v := range info.Result.Dash.Video {
+		as, err = m.AddNewAdaptationSetVideo(v.MimeType, "progressive", true, v.StartWithSap)
+		if err != nil {
+			return nil, err
+		}
+		video, err := as.AddNewRepresentationVideo(v.Bandwidth, v.Codecs, fmt.Sprint(time.Now().UnixMicro()), v.FrameRate, v.Width, v.Height)
+		if err != nil {
+			return nil, err
+		}
+		video.Sar = &v.Sar
+		err = video.AddNewBaseURL(v.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		_, err = video.AddNewSegmentBase(v.SegmentBase.IndexRange, v.SegmentBase.Initialization)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	as = nil
+	for _, a := range info.Result.Dash.Audio {
+		as, err = m.AddNewAdaptationSetAudio(a.MimeType, true, a.StartWithSap, "und")
+		if err != nil {
+			return nil, err
+		}
+		audio, err := as.AddNewRepresentationAudio(44100, a.Bandwidth, a.Codecs, fmt.Sprint(time.Now().UnixMicro()))
+		if err != nil {
+			return nil, err
+		}
+		audio.Sar = &a.Sar
+		err = audio.AddNewBaseURL(a.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		_, err = audio.AddNewSegmentBase(a.SegmentBase.IndexRange, a.SegmentBase.Initialization)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
 }

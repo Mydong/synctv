@@ -4,27 +4,10 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
 )
-
-func Admins(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
-
-	u := db.GetAdmins()
-	us := make([]model.UserInfoResp, len(u))
-	for i, v := range u {
-		us[i] = model.UserInfoResp{
-			ID:        v.ID,
-			Username:  v.Username,
-			Role:      v.Role,
-			CreatedAt: v.CreatedAt.UnixMilli(),
-		}
-	}
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(us))
-}
 
 func AddAdmin(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
@@ -44,7 +27,7 @@ func AddAdmin(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("user not found"))
 		return
 	}
-	if u.Role >= dbModel.RoleAdmin {
+	if u.IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user is already admin"))
 		return
 	}
@@ -75,7 +58,7 @@ func DeleteAdmin(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("user not found"))
 		return
 	}
-	if u.Role == dbModel.RoleRoot {
+	if u.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot remove root"))
 		return
 	}

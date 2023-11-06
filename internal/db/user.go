@@ -6,6 +6,7 @@ import (
 
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -106,6 +107,12 @@ func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB
 	return ids
 }
 
+func GerUsersIDByIDLike(id string, scopes ...func(*gorm.DB) *gorm.DB) []string {
+	var ids []string
+	db.Model(&model.User{}).Where(`id LIKE ?`, utils.LIKE(id)).Scopes(scopes...).Pluck("id", &ids)
+	return ids
+}
+
 func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
 	var users []*model.User
 	err := db.Where("id = ? OR username LIKE ?", idOrUsername, fmt.Sprintf("%%%s%%", idOrUsername)).Scopes(scopes...).Find(&users).Error
@@ -116,7 +123,7 @@ func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *go
 }
 
 func GetUserByID(id string) (*model.User, error) {
-	if len(id) != 36 {
+	if len(id) != 32 {
 		return nil, errors.New("user id is not 32 bit")
 	}
 	u := &model.User{}
@@ -271,22 +278,22 @@ func SetRoleByID(userID string, role model.Role) error {
 	return err
 }
 
-func GetAllUserWithRoleUser(role model.Role, scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
-	users := []*model.User{}
-	db.Where("role = ?", role).Scopes(scopes...).Find(&users)
-	return users
-}
-
-func GetAllUserCountWithRole(role model.Role, scopes ...func(*gorm.DB) *gorm.DB) int64 {
-	var count int64
-	db.Model(&model.User{}).Where("role = ?", role).Scopes(scopes...).Count(&count)
-	return count
-}
-
 func SetUsernameByID(userID string, username string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("username", username).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
 	}
 	return err
+}
+
+func GetAllUserCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
+	var count int64
+	db.Model(&model.User{}).Scopes(scopes...).Count(&count)
+	return count
+}
+
+func GetAllUsers(scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
+	var users []*model.User
+	db.Scopes(scopes...).Find(&users)
+	return users
 }

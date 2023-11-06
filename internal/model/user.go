@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
 )
 
@@ -25,7 +25,7 @@ type User struct {
 	UpdatedAt            time.Time
 	Providers            []UserProvider        `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Username             string                `gorm:"not null;uniqueIndex"`
-	Role                 Role                  `gorm:"not null;default:user"`
+	Role                 Role                  `gorm:"not null;default:pending"`
 	GroupUserRelations   []RoomUserRelation    `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Rooms                []Room                `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies               []Movie               `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
@@ -39,7 +39,7 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 		u.Username = fmt.Sprintf("%s#%d", u.Username, rand.Intn(9999))
 	}
 	if u.ID == "" {
-		u.ID = uuid.NewString()
+		u.ID = utils.SortUUID()
 	}
 	return nil
 }
@@ -49,7 +49,11 @@ func (u *User) IsRoot() bool {
 }
 
 func (u *User) IsAdmin() bool {
-	return u.Role == RoleAdmin
+	return u.Role == RoleAdmin || u.IsRoot()
+}
+
+func (u *User) IsPending() bool {
+	return u.Role == RolePending
 }
 
 func (u *User) IsBanned() bool {

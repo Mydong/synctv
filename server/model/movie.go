@@ -41,6 +41,21 @@ func (p *PushMovieReq) Validate() error {
 		return ErrTypeTooLong
 	}
 
+	return (*model.BaseMovie)(p).Validate()
+}
+
+type PushMoviesReq []*PushMovieReq
+
+func (p *PushMoviesReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(p)
+}
+
+func (p *PushMoviesReq) Validate() error {
+	for _, v := range *p {
+		if err := v.Validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -53,7 +68,22 @@ func (i *IdReq) Decode(ctx *gin.Context) error {
 }
 
 func (i *IdReq) Validate() error {
-	if len(i.Id) != 36 {
+	if len(i.Id) != 32 {
+		return ErrId
+	}
+	return nil
+}
+
+type IdCanEmptyReq struct {
+	Id string `json:"id"`
+}
+
+func (i *IdCanEmptyReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(i)
+}
+
+func (i *IdCanEmptyReq) Validate() error {
+	if len(i.Id) != 32 && i.Id != "" {
 		return ErrId
 	}
 	return nil
@@ -91,7 +121,7 @@ func (i *IdsReq) Validate() error {
 		return ErrEmptyIds
 	}
 	for _, v := range i.Ids {
-		if len(v) != 36 {
+		if len(v) != 32 {
 			return ErrId
 		}
 	}
@@ -108,7 +138,7 @@ func (s *SwapMovieReq) Decode(ctx *gin.Context) error {
 }
 
 func (s *SwapMovieReq) Validate() error {
-	if len(s.Id1) != 36 || len(s.Id2) != 36 {
+	if len(s.Id1) != 32 || len(s.Id2) != 32 {
 		return ErrId
 	}
 	return nil

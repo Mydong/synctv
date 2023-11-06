@@ -73,9 +73,9 @@ func (r *Room) UpdateMovie(movieId string, movie model.BaseMovie) error {
 	return r.movies.Update(movieId, movie)
 }
 
-func (r *Room) AddMovie(m model.Movie) error {
+func (r *Room) AddMovie(m *model.Movie) error {
 	m.RoomID = r.ID
-	return r.movies.Add(&m)
+	return r.movies.Add(m)
 }
 
 func (r *Room) HasPermission(userID string, permission model.Permission) bool {
@@ -139,7 +139,7 @@ func (r *Room) ClearMovies() error {
 	return r.movies.Clear()
 }
 
-func (r *Room) GetMovieByID(id string) (*movie, error) {
+func (r *Room) GetMovieByID(id string) (*Movie, error) {
 	return r.movies.GetMovieByID(id)
 }
 
@@ -148,20 +148,24 @@ func (r *Room) Current() *Current {
 	return &c
 }
 
-func (r *Room) ChangeCurrentMovie(id string) error {
+func (r *Room) ChangeCurrentMovie(id string, play bool) error {
 	m, err := r.movies.GetMovieByID(id)
 	if err != nil {
 		return err
 	}
-	r.current.SetMovie(*m.Movie)
+	r.current.SetMovie(*m.Movie, play)
 	return nil
+}
+
+func (r *Room) SetCurrentMovie(movie *model.Movie, play bool) {
+	r.current.SetMovie(*movie, play)
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 string) error {
 	return r.movies.SwapMoviePositions(id1, id2)
 }
 
-func (r *Room) GetMoviesWithPage(page, pageSize int) []*movie {
+func (r *Room) GetMoviesWithPage(page, pageSize int) []*Movie {
 	return r.movies.GetMoviesWithPage(page, pageSize)
 }
 
@@ -181,4 +185,17 @@ func (r *Room) SetStatus(playing bool, seek float64, rate float64, timeDiff floa
 
 func (r *Room) SetSeekRate(seek float64, rate float64, timeDiff float64) Status {
 	return r.current.SetSeekRate(seek, rate, timeDiff)
+}
+
+func (r *Room) SetRoomStatus(status model.RoomStatus) error {
+	err := db.SetRoomStatus(r.ID, status)
+	if err != nil {
+		return err
+	}
+	r.Status = status
+	switch status {
+	case model.RoomStatusBanned, model.RoomStatusStopped, model.RoomStatusPending:
+		return CompareAndCloseRoom(r)
+	}
+	return nil
 }

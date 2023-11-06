@@ -36,6 +36,12 @@ func WithRelations(relations []model.RoomUserRelation) CreateRoomConfig {
 	}
 }
 
+func WithStatus(status model.RoomStatus) CreateRoomConfig {
+	return func(r *model.Room) {
+		r.Status = status
+	}
+}
+
 func CreateRoom(name, password string, conf ...CreateRoomConfig) (*model.Room, error) {
 	var hashedPassword []byte
 	if password != "" {
@@ -60,7 +66,7 @@ func CreateRoom(name, password string, conf ...CreateRoomConfig) (*model.Room, e
 }
 
 func GetRoomByID(id string) (*model.Room, error) {
-	if len(id) != 36 {
+	if len(id) != 32 {
 		return nil, errors.New("room id is not 32 bit")
 	}
 	r := &model.Room{}
@@ -166,15 +172,9 @@ func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	return rooms
 }
 
-func GetAllRoomsWithoutHidden(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
-	rooms := []*model.Room{}
-	db.Where("settings_hidden = ?", false).Scopes(scopes...).Find(&rooms)
-	return rooms
-}
-
-func GetAllRoomsWithoutHiddenCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
+func GetAllRoomsCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
 	var count int64
-	db.Model(&model.Room{}).Where("settings_hidden = ?", false).Scopes(scopes...).Count(&count)
+	db.Model(&model.Room{}).Scopes(scopes...).Count(&count)
 	return count
 }
 
@@ -188,4 +188,12 @@ func GetAllRoomsByUserID(userID string) []*model.Room {
 	rooms := []*model.Room{}
 	db.Where("creator_id = ?", userID).Find(&rooms)
 	return rooms
+}
+
+func SetRoomStatus(roomID string, status model.RoomStatus) error {
+	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("status", status).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room not found")
+	}
+	return err
 }

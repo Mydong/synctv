@@ -50,14 +50,22 @@ func Init(e *gin.Engine) {
 				admin.POST("/settings", EditAdminSettings)
 
 				admin.GET("/users", Users)
+
+				admin.GET("/rooms", Rooms)
+
+				admin.POST("/approve/user", ApprovePendingUser)
+
+				admin.POST("/approve/room", ApprovePendingRoom)
+
+				admin.POST("/ban/user", BanUser)
+
+				admin.POST("/ban/room", BanRoom)
 			}
 
 			{
-				root.GET("/admins", Admins)
+				root.POST("/admin/add", AddAdmin)
 
-				root.POST("/addAdmin", AddAdmin)
-
-				root.POST("deleteAdmin", DeleteAdmin)
+				root.POST("/admin/delete", DeleteAdmin)
 			}
 		}
 
@@ -99,6 +107,8 @@ func Init(e *gin.Engine) {
 
 			needAuthMovie.POST("/push", PushMovie)
 
+			needAuthMovie.POST("/pushs", PushMovies)
+
 			needAuthMovie.POST("/edit", EditMovie)
 
 			needAuthMovie.POST("/swap", SwapMovie)
@@ -139,11 +149,23 @@ func Init(e *gin.Engine) {
 			{
 				bilibili := vendor.Group("/bilibili")
 
-				bilibili.GET("/qr", Vbilibili.QRCode)
+				login := bilibili.Group("/login")
 
-				bilibili.POST("/login", Vbilibili.Login)
+				login.GET("/qr", Vbilibili.NewQRCode)
+
+				login.POST("/qr", Vbilibili.LoginWithQR)
+
+				login.GET("/captcha", Vbilibili.NewCaptcha)
+
+				login.POST("/sms/send", Vbilibili.NewSMS)
+
+				login.POST("/sms/login", Vbilibili.LoginWithSMS)
 
 				bilibili.POST("/parse", Vbilibili.Parse)
+
+				bilibili.GET("/me", Vbilibili.Me)
+
+				bilibili.POST("/logout", Vbilibili.Logout)
 			}
 		}
 	}

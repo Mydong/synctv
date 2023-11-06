@@ -1,7 +1,10 @@
 package settings
 
 import (
-	log "github.com/sirupsen/logrus"
+	"fmt"
+	"strconv"
+	"sync/atomic"
+
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 )
@@ -9,40 +12,60 @@ import (
 type BoolSetting interface {
 	Setting
 	Set(bool) error
-	Get() (bool, error)
+	Get() bool
 	Default() bool
+	Parse(string) (bool, error)
+	Stringify(bool) string
 }
 
+var _ BoolSetting = (*Bool)(nil)
+
 type Bool struct {
-	name         string
-	value        string
+	setting
 	defaultValue bool
-	group        model.SettingGroup
+	value        uint32
 }
 
 func NewBool(name string, value bool, group model.SettingGroup) *Bool {
 	b := &Bool{
-		name:         name,
-		group:        group,
+		setting: setting{
+			name:        name,
+			group:       group,
+			settingType: model.SettingTypeBool,
+		},
 		defaultValue: value,
 	}
-	if value {
-		b.value = "1"
-	} else {
-		b.value = "0"
-	}
+	b.set(value)
 	return b
 }
 
-func (b *Bool) Name() string {
-	return b.name
+func (b *Bool) set(value bool) {
+	if value {
+		atomic.StoreUint32(&b.value, 1)
+	} else {
+		atomic.StoreUint32(&b.value, 0)
+	}
 }
 
-func (b *Bool) Init(s string) {
-	if b.value == s {
-		return
+func (b *Bool) Get() bool {
+	return atomic.LoadUint32(&b.value) == 1
+}
+
+func (b *Bool) Init(value string) error {
+	v, err := b.Parse(value)
+	if err != nil {
+		return err
 	}
-	b.value = s
+	b.set(v)
+	return nil
+}
+
+func (b *Bool) Parse(value string) (bool, error) {
+	return strconv.ParseBool(value)
+}
+
+func (b *Bool) Stringify(value bool) string {
+	return strconv.FormatBool(value)
 }
 
 func (b *Bool) Default() bool {
@@ -50,11 +73,11 @@ func (b *Bool) Default() bool {
 }
 
 func (b *Bool) DefaultRaw() string {
-	if b.defaultValue {
-		return "1"
-	} else {
-		return "0"
-	}
+	return b.Stringify(b.defaultValue)
+}
+
+func (b *Bool) Raw() string {
+	return b.Stringify(b.Get())
 }
 
 func (b *Bool) DefaultInterface() any {
@@ -62,51 +85,30 @@ func (b *Bool) DefaultInterface() any {
 }
 
 func (b *Bool) SetRaw(value string) error {
-	if b.value == value {
-		return nil
+	err := b.Init(value)
+	if err != nil {
+		return err
 	}
-	b.value = value
-	return db.UpdateSettingItemValue(b.name, value)
+	return db.UpdateSettingItemValue(b.Name(), b.Raw())
 }
 
 func (b *Bool) Set(value bool) error {
-	if value {
-		return b.SetRaw("1")
-	} else {
-		return b.SetRaw("0")
+	err := db.UpdateSettingItemValue(b.Name(), b.Stringify(value))
+	if err != nil {
+		return err
 	}
+	b.set(value)
+	return nil
 }
 
-func (b *Bool) Get() (bool, error) {
-	return b.value == "1", nil
-}
-
-func (b *Bool) Raw() string {
-	return b.value
-}
-
-func (b *Bool) Type() model.SettingType {
-	return model.SettingTypeBool
-}
-
-func (b *Bool) Group() model.SettingGroup {
-	return b.group
-}
-
-func (b *Bool) Interface() (any, error) {
+func (b *Bool) Interface() any {
 	return b.Get()
 }
 
 func newBoolSetting(k string, v bool, g model.SettingGroup) BoolSetting {
-	if Settings == nil {
-		Settings = make(map[string]Setting)
-	}
-	if GroupSettings == nil {
-		GroupSettings = make(map[model.SettingGroup][]Setting)
-	}
 	_, loaded := Settings[k]
 	if loaded {
-		log.Fatalf("setting %s already exists", k)
+		panic(fmt.Sprintf("setting %s already exists", k))
 	}
 	b := NewBool(k, v, g)
 	Settings[k] = b

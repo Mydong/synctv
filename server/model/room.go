@@ -6,8 +6,9 @@ import (
 	"regexp"
 
 	json "github.com/json-iterator/go"
-	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/settings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -63,21 +64,14 @@ func (c *CreateRoomReq) Validate() error {
 		} else if !alnumPrintReg.MatchString(c.Password) {
 			return ErrPasswordHasInvalidChar
 		}
-	} else if conf.Conf.Room.MustPassword {
+	} else if settings.CreateRoomNeedPwd.Get() {
 		return FormatEmptyPasswordError("room")
 	}
 
 	return nil
 }
 
-type RoomListResp struct {
-	RoomId       string `json:"roomId"`
-	RoomName     string `json:"roomName"`
-	PeopleNum    int64  `json:"peopleNum"`
-	NeedPassword bool   `json:"needPassword"`
-	Creator      string `json:"creator"`
-	CreatedAt    int64  `json:"createdAt"`
-}
+type RoomListResp = op.RoomInfo
 
 type LoginRoomReq struct {
 	RoomId   string `json:"roomId"`
@@ -89,7 +83,7 @@ func (l *LoginRoomReq) Decode(ctx *gin.Context) error {
 }
 
 func (l *LoginRoomReq) Validate() error {
-	if len(l.RoomId) != 36 {
+	if len(l.RoomId) != 32 {
 		return ErrEmptyRoomName
 	}
 
@@ -113,17 +107,18 @@ func (s *SetRoomPasswordReq) Validate() error {
 	return nil
 }
 
-type UserIdReq struct {
-	UserId string `json:"userId"`
+type RoomIDReq struct {
+	Id string `json:"id"`
 }
 
-func (u *UserIdReq) Decode(ctx *gin.Context) error {
-	return json.NewDecoder(ctx.Request.Body).Decode(u)
+func (r *RoomIDReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(r)
 }
 
-func (u *UserIdReq) Validate() error {
-	if len(u.UserId) != 36 {
-		return ErrEmptyUserId
+func (r *RoomIDReq) Validate() error {
+	if len(r.Id) != 32 {
+		return ErrEmptyRoomName
 	}
+
 	return nil
 }

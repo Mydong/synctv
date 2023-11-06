@@ -1,9 +1,11 @@
 package utils
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,12 +14,29 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/zijiren233/stream"
 	yamlcomment "github.com/zijiren233/yaml-comment"
 	"gopkg.in/yaml.v3"
 )
 
-var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+func init() {
+	uuid.EnableRandPool()
+}
+
+var (
+	letters              = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	noRedirectHttpClient = &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+)
+
+func NoRedirectHttpClient() *http.Client {
+	return noRedirectHttpClient
+}
 
 const (
 	UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.2088.69`
@@ -252,4 +271,11 @@ func OptFilePath(filePath *string) {
 
 func LIKE(s string) string {
 	return fmt.Sprintf("%%%s%%", s)
+}
+
+func SortUUID() string {
+	src := uuid.New()
+	dst := make([]byte, 32)
+	hex.Encode(dst, src[:])
+	return stream.BytesToString(dst)
 }

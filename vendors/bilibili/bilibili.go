@@ -92,7 +92,7 @@ type videoPageInfo struct {
 		VtDisplay          string      `json:"vt_display"`
 		NoCache            bool        `json:"no_cache"`
 		Pages              []struct {
-			Cid       int    `json:"cid"`
+			Cid       uint   `json:"cid"`
 			Page      int    `json:"page"`
 			From      string `json:"from"`
 			Part      string `json:"part"`
@@ -128,7 +128,7 @@ type videoPageInfo struct {
 					SectionID int    `json:"section_id"`
 					ID        int    `json:"id"`
 					Aid       int    `json:"aid"`
-					Cid       int    `json:"cid"`
+					Cid       uint   `json:"cid"`
 					Title     string `json:"title"`
 					Attribute int    `json:"attribute"`
 					Arc       struct {
@@ -813,15 +813,289 @@ type pgcURLInfo struct {
 	} `json:"result"`
 }
 
-type wbi struct {
+type Nav struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	TTL     int    `json:"ttl"`
 	Data    struct {
-		IsLogin bool `json:"isLogin"`
-		WbiImg  struct {
+		IsLogin       bool   `json:"isLogin"`
+		EmailVerified int    `json:"email_verified"`
+		Face          string `json:"face"`
+		FaceNft       int    `json:"face_nft"`
+		FaceNftType   int    `json:"face_nft_type"`
+		LevelInfo     struct {
+			CurrentLevel int `json:"current_level"`
+			CurrentMin   int `json:"current_min"`
+			CurrentExp   int `json:"current_exp"`
+			// NextExp      string `json:"next_exp"` // 小于6级时：num，6级时：str
+		} `json:"level_info"`
+		Mid            int `json:"mid"`
+		MobileVerified int `json:"mobile_verified"`
+		// Money          int `json:"money"` // 可能为float
+		Moral    int `json:"moral"`
+		Official struct {
+			Role  int    `json:"role"`
+			Title string `json:"title"`
+			Desc  string `json:"desc"`
+			Type  int    `json:"type"`
+		} `json:"official"`
+		OfficialVerify struct {
+			Type int    `json:"type"`
+			Desc string `json:"desc"`
+		} `json:"officialVerify"`
+		Pendant struct {
+			Pid               int    `json:"pid"`
+			Name              string `json:"name"`
+			Image             string `json:"image"`
+			Expire            int    `json:"expire"`
+			ImageEnhance      string `json:"image_enhance"`
+			ImageEnhanceFrame string `json:"image_enhance_frame"`
+			NPid              int    `json:"n_pid"`
+		} `json:"pendant"`
+		Scores       int    `json:"scores"`
+		Uname        string `json:"uname"`
+		VipDueDate   int64  `json:"vipDueDate"`
+		VipStatus    int    `json:"vipStatus"`
+		VipType      int    `json:"vipType"`
+		VipPayType   int    `json:"vip_pay_type"`
+		VipThemeType int    `json:"vip_theme_type"`
+		VipLabel     struct {
+			Path                  string `json:"path"`
+			Text                  string `json:"text"`
+			LabelTheme            string `json:"label_theme"`
+			TextColor             string `json:"text_color"`
+			BgStyle               int    `json:"bg_style"`
+			BgColor               string `json:"bg_color"`
+			BorderColor           string `json:"border_color"`
+			UseImgLabel           bool   `json:"use_img_label"`
+			ImgLabelURIHans       string `json:"img_label_uri_hans"`
+			ImgLabelURIHant       string `json:"img_label_uri_hant"`
+			ImgLabelURIHansStatic string `json:"img_label_uri_hans_static"`
+			ImgLabelURIHantStatic string `json:"img_label_uri_hant_static"`
+		} `json:"vip_label"`
+		VipAvatarSubscript int    `json:"vip_avatar_subscript"`
+		VipNicknameColor   string `json:"vip_nickname_color"`
+		Vip                struct {
+			Type       int   `json:"type"`
+			Status     int   `json:"status"`
+			DueDate    int64 `json:"due_date"`
+			VipPayType int   `json:"vip_pay_type"`
+			ThemeType  int   `json:"theme_type"`
+			Label      struct {
+				Path                  string `json:"path"`
+				Text                  string `json:"text"`
+				LabelTheme            string `json:"label_theme"`
+				TextColor             string `json:"text_color"`
+				BgStyle               int    `json:"bg_style"`
+				BgColor               string `json:"bg_color"`
+				BorderColor           string `json:"border_color"`
+				UseImgLabel           bool   `json:"use_img_label"`
+				ImgLabelURIHans       string `json:"img_label_uri_hans"`
+				ImgLabelURIHant       string `json:"img_label_uri_hant"`
+				ImgLabelURIHansStatic string `json:"img_label_uri_hans_static"`
+				ImgLabelURIHantStatic string `json:"img_label_uri_hant_static"`
+			} `json:"label"`
+			AvatarSubscript    int    `json:"avatar_subscript"`
+			NicknameColor      string `json:"nickname_color"`
+			Role               int    `json:"role"`
+			AvatarSubscriptURL string `json:"avatar_subscript_url"`
+			TvVipStatus        int    `json:"tv_vip_status"`
+			TvVipPayType       int    `json:"tv_vip_pay_type"`
+			TvDueDate          int    `json:"tv_due_date"`
+		} `json:"vip"`
+		Wallet struct {
+			Mid           int `json:"mid"`
+			BcoinBalance  int `json:"bcoin_balance"`
+			CouponBalance int `json:"coupon_balance"`
+			CouponDueTime int `json:"coupon_due_time"`
+		} `json:"wallet"`
+		HasShop        bool   `json:"has_shop"`
+		ShopURL        string `json:"shop_url"`
+		AllowanceCount int    `json:"allowance_count"`
+		AnswerStatus   int    `json:"answer_status"`
+		IsSeniorMember int    `json:"is_senior_member"`
+		WbiImg         struct {
 			ImgURL string `json:"img_url"`
 			SubURL string `json:"sub_url"`
 		} `json:"wbi_img"`
+		IsJury bool `json:"is_jury"`
 	} `json:"data"`
+}
+
+type dashResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	TTL     int    `json:"ttl"`
+	Data    struct {
+		From              string   `json:"from"`
+		Result            string   `json:"result"`
+		Message           string   `json:"message"`
+		Quality           int      `json:"quality"`
+		Format            string   `json:"format"`
+		Timelength        int      `json:"timelength"`
+		AcceptFormat      string   `json:"accept_format"`
+		AcceptDescription []string `json:"accept_description"`
+		AcceptQuality     []int    `json:"accept_quality"`
+		VideoCodecid      int      `json:"video_codecid"`
+		SeekParam         string   `json:"seek_param"`
+		SeekType          string   `json:"seek_type"`
+		Dash              struct {
+			Duration      float64 `json:"duration"`
+			MinBufferTime float64 `json:"min_buffer_time"`
+			Video         []struct {
+				ID           int      `json:"id"`
+				BaseURL      string   `json:"base_url"`
+				BackupURL    []string `json:"backup_url"`
+				Bandwidth    int64    `json:"bandwidth"`
+				MimeType     string   `json:"mime_type"`
+				Codecs       string   `json:"codecs"`
+				Width        int64    `json:"width"`
+				Height       int64    `json:"height"`
+				FrameRate    string   `json:"frame_rate"`
+				Sar          string   `json:"sar"`
+				StartWithSap int64    `json:"start_with_sap"`
+				SegmentBase  struct {
+					Initialization string `json:"initialization"`
+					IndexRange     string `json:"index_range"`
+				} `json:"segment_base"`
+				Codecid int `json:"codecid"`
+			} `json:"video"`
+			Audio []struct {
+				ID           int      `json:"id"`
+				BaseURL      string   `json:"base_url"`
+				BackupURL    []string `json:"backup_url"`
+				Bandwidth    int64    `json:"bandwidth"`
+				MimeType     string   `json:"mime_type"`
+				Codecs       string   `json:"codecs"`
+				Width        int      `json:"width"`
+				Height       int      `json:"height"`
+				FrameRate    string   `json:"frame_rate"`
+				Sar          string   `json:"sar"`
+				StartWithSap int64    `json:"start_with_sap"`
+				SegmentBase  struct {
+					Initialization string `json:"initialization"`
+					IndexRange     string `json:"index_range"`
+				} `json:"segment_base"`
+				Codecid int `json:"codecid"`
+			} `json:"audio"`
+			Dolby struct {
+				Type  int         `json:"type"`
+				Audio interface{} `json:"audio"`
+			} `json:"dolby"`
+			Flac interface{} `json:"flac"`
+		} `json:"dash"`
+		SupportFormats []struct {
+			Quality        int      `json:"quality"`
+			Format         string   `json:"format"`
+			NewDescription string   `json:"new_description"`
+			DisplayDesc    string   `json:"display_desc"`
+			Superscript    string   `json:"superscript"`
+			Codecs         []string `json:"codecs"`
+		} `json:"support_formats"`
+		HighFormat   interface{} `json:"high_format"`
+		LastPlayTime int         `json:"last_play_time"`
+		LastPlayCid  int         `json:"last_play_cid"`
+	} `json:"data"`
+}
+
+type dashPGCResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Result  struct {
+		AcceptFormat string `json:"accept_format"`
+		Code         int    `json:"code"`
+		SeekParam    string `json:"seek_param"`
+		IsPreview    int    `json:"is_preview"`
+		Fnval        int    `json:"fnval"`
+		VideoProject bool   `json:"video_project"`
+		Fnver        int    `json:"fnver"`
+		Type         string `json:"type"`
+		Bp           int    `json:"bp"`
+		Result       string `json:"result"`
+		SeekType     string `json:"seek_type"`
+		From         string `json:"from"`
+		VideoCodecid int    `json:"video_codecid"`
+		RecordInfo   struct {
+			RecordIcon string `json:"record_icon"`
+			Record     string `json:"record"`
+		} `json:"record_info"`
+		IsDrm          bool   `json:"is_drm"`
+		NoRexcode      int    `json:"no_rexcode"`
+		Format         string `json:"format"`
+		SupportFormats []struct {
+			DisplayDesc    string   `json:"display_desc"`
+			Superscript    string   `json:"superscript"`
+			NeedLogin      bool     `json:"need_login,omitempty"`
+			Codecs         []string `json:"codecs"`
+			Format         string   `json:"format"`
+			Description    string   `json:"description"`
+			NeedVip        bool     `json:"need_vip,omitempty"`
+			Quality        int      `json:"quality"`
+			NewDescription string   `json:"new_description"`
+		} `json:"support_formats"`
+		Message       string `json:"message"`
+		AcceptQuality []int  `json:"accept_quality"`
+		Quality       int    `json:"quality"`
+		Timelength    int    `json:"timelength"`
+		HasPaid       bool   `json:"has_paid"`
+		Dash          struct {
+			Duration      float64 `json:"duration"`
+			MinBufferTime float64 `json:"min_buffer_time"`
+			Video         []struct {
+				StartWithSap int64    `json:"start_with_sap"`
+				Bandwidth    int64    `json:"bandwidth"`
+				Sar          string   `json:"sar"`
+				Codecs       string   `json:"codecs"`
+				BaseURL      string   `json:"base_url"`
+				BackupURL    []string `json:"backup_url"`
+				SegmentBase  struct {
+					Initialization string `json:"initialization"`
+					IndexRange     string `json:"index_range"`
+				} `json:"segment_base"`
+				FrameRate    string `json:"frame_rate"`
+				Codecid      int    `json:"codecid"`
+				Size         int    `json:"size"`
+				MimeType     string `json:"mime_type"`
+				Width        int64  `json:"width"`
+				StartWithSAP int    `json:"startWithSAP"`
+				ID           int    `json:"id"`
+				Height       int64  `json:"height"`
+				Md5          string `json:"md5"`
+			} `json:"video"`
+			Audio []struct {
+				StartWithSap int64    `json:"start_with_sap"`
+				Bandwidth    int64    `json:"bandwidth"`
+				Sar          string   `json:"sar"`
+				Codecs       string   `json:"codecs"`
+				BaseURL      string   `json:"base_url"`
+				BackupURL    []string `json:"backup_url"`
+				SegmentBase  struct {
+					Initialization string `json:"initialization"`
+					IndexRange     string `json:"index_range"`
+				} `json:"segment_base"`
+				FrameRate    string `json:"frame_rate"`
+				Codecid      int    `json:"codecid"`
+				Size         int    `json:"size"`
+				MimeType     string `json:"mime_type"`
+				Width        int    `json:"width"`
+				StartWithSAP int    `json:"startWithSAP"`
+				ID           int    `json:"id"`
+				Height       int    `json:"height"`
+				Md5          string `json:"md5"`
+			} `json:"audio"`
+			Dolby struct {
+				Audio []interface{} `json:"audio"`
+				Type  int           `json:"type"`
+			} `json:"dolby"`
+		} `json:"dash"`
+		ClipInfoList []struct {
+			MaterialNo int    `json:"materialNo"`
+			Start      int    `json:"start"`
+			End        int    `json:"end"`
+			ToastText  string `json:"toastText"`
+			ClipType   string `json:"clipType"`
+		} `json:"clip_info_list"`
+		AcceptDescription []string `json:"accept_description"`
+		Status            int      `json:"status"`
+	} `json:"result"`
 }

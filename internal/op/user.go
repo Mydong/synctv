@@ -5,6 +5,7 @@ import (
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/settings"
 )
 
 type User struct {
@@ -12,14 +13,30 @@ type User struct {
 }
 
 func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*model.Room, error) {
+	if u.IsBanned() {
+		return nil, errors.New("user banned")
+	}
+	if !u.IsAdmin() && settings.CreateRoomNeedReview.Get() {
+		conf = append(conf, db.WithStatus(model.RoomStatusPending))
+	} else {
+		conf = append(conf, db.WithStatus(model.RoomStatusActive))
+	}
 	return db.CreateRoom(name, password, append(conf, db.WithCreator(&u.User))...)
 }
 
-func (u *User) NewMovie(movie model.BaseMovie) model.Movie {
-	return model.Movie{
-		Base:      movie,
+func (u *User) NewMovie(movie *model.BaseMovie) *model.Movie {
+	return &model.Movie{
+		Base:      *movie,
 		CreatorID: u.ID,
 	}
+}
+
+func (u *User) NewMovies(movies []*model.BaseMovie) []*model.Movie {
+	var ms = make([]*model.Movie, 0, len(movies))
+	for i, m := range movies {
+		ms[i] = u.NewMovie(m)
+	}
+	return ms
 }
 
 func (u *User) IsRoot() bool {
@@ -27,7 +44,7 @@ func (u *User) IsRoot() bool {
 }
 
 func (u *User) IsAdmin() bool {
-	return u.Role >= model.RoleAdmin
+	return u.Role == model.RoleAdmin || u.IsRoot()
 }
 
 func (u *User) IsBanned() bool {

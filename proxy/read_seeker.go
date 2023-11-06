@@ -7,18 +7,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 )
 
 type HttpReadSeeker struct {
-	offset        int64
-	url           string
-	contentLength int64
-	method        string
-	body          io.Reader
-	client        *http.Client
-	headers       map[string]string
-	ctx           context.Context
+	offset                int64
+	url                   string
+	contentLength         int64
+	method                string
+	body                  io.Reader
+	client                *http.Client
+	headers               map[string]string
+	ctx                   context.Context
+	allowedContentTypes   []string
+	allowedStatusCodes    []int
+	notAllowedStatusCodes []int
 }
 
 type HttpReadSeekerConf func(h *HttpReadSeeker)
@@ -82,6 +86,24 @@ func WithStartOffset(offset int64) HttpReadSeekerConf {
 	}
 }
 
+func AllowedContentTypes(types ...string) HttpReadSeekerConf {
+	return func(h *HttpReadSeeker) {
+		h.allowedContentTypes = types
+	}
+}
+
+func AllowedStatusCodes(codes ...int) HttpReadSeekerConf {
+	return func(h *HttpReadSeeker) {
+		h.allowedStatusCodes = codes
+	}
+}
+
+func NotAllowedStatusCodes(codes ...int) HttpReadSeekerConf {
+	return func(h *HttpReadSeeker) {
+		h.notAllowedStatusCodes = codes
+	}
+}
+
 func NewHttpReadSeeker(url string, conf ...HttpReadSeekerConf) *HttpReadSeeker {
 	rs := &HttpReadSeeker{
 		offset:        0,
@@ -113,6 +135,9 @@ func (h *HttpReadSeeker) fix() *HttpReadSeeker {
 	if h.client == nil {
 		h.client = http.DefaultClient
 	}
+	if len(h.notAllowedStatusCodes) == 0 {
+		h.notAllowedStatusCodes = []int{http.StatusNotFound}
+	}
 	return h
 }
 
@@ -130,9 +155,40 @@ func (h *HttpReadSeeker) Read(p []byte) (n int, err error) {
 		return 0, err
 	}
 	defer resp.Body.Close()
+
+	if err := h.checkStatusCode(resp.StatusCode); err != nil {
+		return 0, err
+	}
+	if err := h.checkContentType(resp.Header.Get("Content-Type")); err != nil {
+		return 0, err
+	}
+
 	n, err = io.ReadFull(resp.Body, p)
 	h.offset += int64(n)
 	return n, err
+}
+
+func (h *HttpReadSeeker) checkContentType(ct string) error {
+	if len(h.allowedContentTypes) != 0 {
+		if ct == "" || slices.Index(h.allowedContentTypes, ct) == -1 {
+			return fmt.Errorf("content type `%s` not allowed", ct)
+		}
+	}
+	return nil
+}
+
+func (h *HttpReadSeeker) checkStatusCode(code int) error {
+	if len(h.allowedStatusCodes) != 0 {
+		if slices.Index(h.allowedStatusCodes, code) == -1 {
+			return fmt.Errorf("status code `%d` not allowed", code)
+		}
+	}
+	if len(h.notAllowedStatusCodes) != 0 {
+		if slices.Index(h.notAllowedStatusCodes, code) != -1 {
+			return fmt.Errorf("status code `%d` not allowed", code)
+		}
+	}
+	return nil
 }
 
 func (h *HttpReadSeeker) Seek(offset int64, whence int) (int64, error) {
@@ -155,6 +211,13 @@ func (h *HttpReadSeeker) Seek(offset int64, whence int) (int64, error) {
 				return 0, err
 			}
 			defer resp.Body.Close()
+
+			if err := h.checkStatusCode(resp.StatusCode); err != nil {
+				return 0, err
+			}
+			if err := h.checkContentType(resp.Header.Get("Content-Type")); err != nil {
+				return 0, err
+			}
 
 			h.contentLength, err = strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
 			if err != nil {

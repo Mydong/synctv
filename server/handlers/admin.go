@@ -48,12 +48,7 @@ func AdminSettings(ctx *gin.Context) {
 	}
 	resp := make(gin.H, len(s))
 	for _, v := range s {
-		i, err := v.Interface()
-		if err != nil {
-			ctx.AbortWithError(http.StatusInternalServerError, err)
-			return
-		}
-		resp[v.Name()] = i
+		resp[v.Name()] = v.Interface()
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
@@ -61,12 +56,6 @@ func AdminSettings(ctx *gin.Context) {
 
 func Users(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
-	order := ctx.Query("order")
-	if order == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
-		return
-	}
-
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -77,11 +66,21 @@ func Users(ctx *gin.Context) {
 
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
-	if keyword := ctx.Query("keyword"); keyword != "" {
-		scopes = append(scopes, db.WhereUserNameLike(keyword))
+	switch ctx.DefaultQuery("role", "user") {
+	case "admin":
+		scopes = append(scopes, db.WhereRole(dbModel.RoleAdmin))
+	case "user":
+		scopes = append(scopes, db.WhereRole(dbModel.RoleUser))
+	case "pending":
+		scopes = append(scopes, db.WhereRole(dbModel.RolePending))
+	case "banned":
+		scopes = append(scopes, db.WhereRole(dbModel.RoleBanned))
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support role"))
+		return
 	}
 
-	switch order {
+	switch ctx.DefaultQuery("order", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -94,25 +93,31 @@ func Users(ctx *gin.Context) {
 		} else {
 			scopes = append(scopes, db.OrderByAsc("username"))
 		}
-	case "id":
-		if desc {
-			scopes = append(scopes, db.OrderByIDDesc)
-		} else {
-			scopes = append(scopes, db.OrderByIDAsc)
-		}
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
 		return
 	}
 
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		// search mode, all, name, id
+		switch ctx.DefaultQuery("search", "all") {
+		case "all":
+			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, db.GerUsersIDByIDLike(keyword)))
+		case "name":
+			scopes = append(scopes, db.WhereUsernameLike(keyword))
+		case "id":
+			scopes = append(scopes, db.WhereIDIn(db.GerUsersIDByIDLike(keyword)))
+		}
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllUserCountWithRole(dbModel.RoleUser, scopes...),
-		"list":  genUserListResp(dbModel.RoleUser, append(scopes, db.Paginate(page, pageSize))...),
+		"total": db.GetAllUserCount(scopes...),
+		"list":  genUserListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }
 
-func genUserListResp(role dbModel.Role, scopes ...func(db *gorm.DB) *gorm.DB) []*model.UserInfoResp {
-	us := db.GetAllUserWithRoleUser(role, scopes...)
+func genUserListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.UserInfoResp {
+	us := db.GetAllUsers(scopes...)
 	resp := make([]*model.UserInfoResp, len(us))
 	for i, v := range us {
 		resp[i] = &model.UserInfoResp{
@@ -125,70 +130,31 @@ func genUserListResp(role dbModel.Role, scopes ...func(db *gorm.DB) *gorm.DB) []
 	return resp
 }
 
-func PendingUsers(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
-	order := ctx.Query("order")
-	if order == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
+func ApprovePendingUser(ctx *gin.Context) {
+	req := model.UserIDReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	user, err := db.GetUserByID(req.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
-
-	scopes := []func(db *gorm.DB) *gorm.DB{}
-
-	if keyword := ctx.Query("keyword"); keyword != "" {
-		scopes = append(scopes, db.WhereUserNameLike(keyword))
-	}
-
-	switch order {
-	case "createdAt":
-		if desc {
-			scopes = append(scopes, db.OrderByCreatedAtDesc)
-		} else {
-			scopes = append(scopes, db.OrderByCreatedAtAsc)
-		}
-	case "name":
-		if desc {
-			scopes = append(scopes, db.OrderByDesc("username"))
-		} else {
-			scopes = append(scopes, db.OrderByAsc("username"))
-		}
-	case "id":
-		if desc {
-			scopes = append(scopes, db.OrderByIDDesc)
-		} else {
-			scopes = append(scopes, db.OrderByIDAsc)
-		}
-	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+	if !user.IsPending() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user is not pending"))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllUserCountWithRole(dbModel.RolePending, scopes...),
-		"list":  genUserListResp(dbModel.RolePending, append(scopes, db.Paginate(page, pageSize))...),
-	}))
-}
-
-func ApprovePendingUser(Authorization, userID string) error {
-	user, err := op.GetUserById(userID)
+	err = db.SetRoleByID(req.ID, dbModel.RoleUser)
 	if err != nil {
-		return err
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
 	}
-	if !user.IsPending() {
-		return errors.New("user is not pending")
-	}
-	if err := user.SetRole(dbModel.RoleUser); err != nil {
-		return err
-	}
-	return nil
+
+	ctx.Status(http.StatusNoContent)
 }
 
 func BanUser(ctx *gin.Context) {
@@ -202,7 +168,15 @@ func BanUser(ctx *gin.Context) {
 
 	u, err := op.GetUserById(req.ID)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		if errors.Is(err, op.ErrUserPending) {
+			err = db.SetRoleByID(req.ID, dbModel.RoleBanned)
+			if err != nil {
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+				return
+			}
+		} else {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		}
 		return
 	}
 
@@ -216,6 +190,149 @@ func BanUser(ctx *gin.Context) {
 	}
 
 	err = u.SetRole(dbModel.RoleBanned)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func Rooms(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	page, pageSize, err := GetPageAndPageSize(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+
+	scopes := []func(db *gorm.DB) *gorm.DB{}
+
+	switch ctx.DefaultQuery("status", "active") {
+	case "active":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusActive))
+	case "pending":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusPending))
+	case "banned":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support status"))
+		return
+	}
+
+	switch ctx.DefaultQuery("order", "name") {
+	case "createdAt":
+		if desc {
+			scopes = append(scopes, db.OrderByCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("name"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("name"))
+		}
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		return
+	}
+
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		// search mode, all, name, creator
+		switch ctx.DefaultQuery("search", "all") {
+		case "all":
+			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, db.GerUsersIDByUsernameLike(keyword), keyword))
+		case "name":
+			scopes = append(scopes, db.WhereRoomNameLike(keyword))
+		case "creator":
+			scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+		case "id":
+			scopes = append(scopes, db.WhereIDLike(keyword))
+		}
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"total": db.GetAllRoomsCount(scopes...),
+		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
+	}))
+}
+
+func ApprovePendingRoom(ctx *gin.Context) {
+	req := model.RoomIDReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	room, err := db.GetRoomByID(req.Id)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if !room.IsPending() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room is not pending"))
+		return
+	}
+
+	err = db.SetRoomStatus(req.Id, dbModel.RoomStatusActive)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func BanRoom(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	req := model.RoomIDReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	room, err := op.LoadOrInitRoomByID(req.Id)
+	if err != nil {
+		if errors.Is(err, op.ErrRoomPending) || errors.Is(err, op.ErrRoomStopped) {
+			err = db.SetRoomStatus(req.Id, dbModel.RoomStatusBanned)
+			if err != nil {
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+				return
+			}
+		} else {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		}
+		return
+	}
+
+	creator, err := db.GetUserByID(room.CreatorID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if creator.ID == user.ID {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban yourself"))
+		return
+	}
+
+	if creator.IsAdmin() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("no permission"))
+		return
+	}
+
+	if room.IsBanned() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room is already banned"))
+		return
+	}
+
+	err = room.SetRoomStatus(dbModel.RoomStatusBanned)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
