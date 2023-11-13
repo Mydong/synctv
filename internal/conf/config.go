@@ -14,9 +14,6 @@ type Config struct {
 	// Jwt
 	Jwt JwtConfig `yaml:"jwt"`
 
-	// Rtmp
-	Rtmp RtmpConfig `yaml:"rtmp" hc:"you can use rtmp to publish live"`
-
 	// Proxy
 	Proxy ProxyConfig `yaml:"proxy" hc:"you can use proxy to proxy movie and live when custom headers or network is slow to connect to origin server"`
 
@@ -28,6 +25,9 @@ type Config struct {
 
 	// RateLimit
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
+
+	// Vendor
+	Vendor VendorConfig `yaml:"vendor"`
 }
 
 func (c *Config) Save(file string) error {
@@ -45,9 +45,6 @@ func DefaultConfig() *Config {
 		// Jwt
 		Jwt: DefaultJwtConfig(),
 
-		// Rtmp
-		Rtmp: DefaultRtmpConfig(),
-
 		// Proxy
 		Proxy: DefaultProxyConfig(),
 
@@ -59,5 +56,8 @@ func DefaultConfig() *Config {
 
 		// RateLimit
 		RateLimit: DefaultRateLimitConfig(),
+
+		// Vendor
+		Vendor: DefaultVendorConfig(),
 	}
 }

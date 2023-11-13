@@ -106,28 +106,6 @@ func AuthUser(Authorization string) (*op.User, error) {
 	return u, nil
 }
 
-func AuthAdmin(Authorization string) (*op.User, error) {
-	u, err := AuthUser(Authorization)
-	if err != nil {
-		return nil, err
-	}
-	if !u.IsAdmin() {
-		return nil, errors.New("user is not admin")
-	}
-	return u, nil
-}
-
-func AuthRoot(Authorization string) (*op.User, error) {
-	u, err := AuthUser(Authorization)
-	if err != nil {
-		return nil, err
-	}
-	if !u.IsRoot() {
-		return nil, errors.New("user is not admin")
-	}
-	return u, nil
-}
-
 func NewAuthUserToken(user *op.User) (string, error) {
 	if user.IsBanned() {
 		return "", errors.New("user banned")
@@ -156,6 +134,14 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 	if user.IsPending() {
 		return "", errors.New("user is pending, need admin to approve")
 	}
+	if room.Settings.DisableJoinNewUser {
+		if _, err := room.GetRoomUserRelation(user.ID); err != nil {
+			return "", errors.New("room is not allow new user to join")
+		}
+	} else if _, err := room.LoadOrCreateRoomUserRelation(user.ID); err != nil {
+		return "", err
+	}
+
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
 	if err != nil {
 		return "", err
@@ -198,9 +184,13 @@ func AuthUserMiddleware(ctx *gin.Context) {
 }
 
 func AuthAdminMiddleware(ctx *gin.Context) {
-	user, err := AuthAdmin(ctx.GetHeader("Authorization"))
+	user, err := AuthUser(ctx.GetHeader("Authorization"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	if !user.IsAdmin() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not admin"))
 		return
 	}
 
@@ -209,9 +199,13 @@ func AuthAdminMiddleware(ctx *gin.Context) {
 }
 
 func AuthRootMiddleware(ctx *gin.Context) {
-	user, err := AuthRoot(ctx.GetHeader("Authorization"))
+	user, err := AuthUser(ctx.GetHeader("Authorization"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	if !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not root"))
 		return
 	}
 

@@ -14,7 +14,7 @@ import (
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
+	"github.com/zijiren233/gencontainer/refreshcache"
 	"gorm.io/gorm"
 )
 
@@ -44,13 +44,11 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	r, err := user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting))
+	room, err := user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-
-	room, _ := op.LoadOrInitRoomByID(r.ID)
 
 	token, err := middlewares.NewAuthRoomToken(user, room)
 	if err != nil {
@@ -145,8 +143,10 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp
 			RoomName:     r.Name,
 			PeopleNum:    op.ClientNum(r.ID),
 			NeedPassword: len(r.HashedPassword) != 0,
+			CreatorID:    r.CreatorID,
 			Creator:      op.GetUserName(r.CreatorID),
 			CreatedAt:    r.CreatedAt.UnixMilli(),
+			Status:       r.Status,
 		}
 	}
 	return resp
@@ -162,6 +162,7 @@ func CheckRoom(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"peopleNum":    op.ClientNum(r.ID),
 		"needPassword": r.NeedPassword(),
+		"creator":      op.GetUserName(r.CreatorID),
 	}))
 }
 
@@ -201,7 +202,7 @@ func DeleteRoom(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	if err := user.DeleteRoom(room.ID); err != nil {
+	if err := user.DeleteRoom(room); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 		return
 	}
@@ -219,7 +220,7 @@ func SetRoomPassword(ctx *gin.Context) {
 		return
 	}
 
-	if err := user.SetRoomPassword(room.ID, req.Password); err != nil {
+	if err := user.SetRoomPassword(room, req.Password); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 		return
 	}
@@ -240,8 +241,82 @@ func RoomSetting(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	// user := ctx.MustGet("user").(*op.User)
 
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(room.Settings))
+}
+
+func SetRoomSetting(ctx *gin.Context) {
+	room := ctx.MustGet("room").(*op.Room)
+	user := ctx.MustGet("user").(*op.User)
+
+	req := model.SetRoomSettingReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := user.SetRoomSetting(room, dbModel.RoomSettings(req)); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func RoomUsers(ctx *gin.Context) {
+	room := ctx.MustGet("room").(*op.Room)
+	page, pageSize, err := GetPageAndPageSize(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+
+	preloadScopes := []func(db *gorm.DB) *gorm.DB{db.WhereRoomID(room.ID)}
+	scopes := []func(db *gorm.DB) *gorm.DB{}
+
+	switch ctx.DefaultQuery("status", "active") {
+	case "pending":
+		preloadScopes = append(preloadScopes, db.WhereRoomUserStatus(dbModel.RoomUserStatusPending))
+	case "banned":
+		preloadScopes = append(preloadScopes, db.WhereRoomUserStatus(dbModel.RoomUserStatusBanned))
+	case "active":
+		preloadScopes = append(preloadScopes, db.WhereRoomUserStatus(dbModel.RoomUserStatusActive))
+	}
+
+	switch ctx.DefaultQuery("order", "name") {
+	case "join":
+		if desc {
+			preloadScopes = append(preloadScopes, db.OrderByCreatedAtDesc)
+		} else {
+			preloadScopes = append(preloadScopes, db.OrderByCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("username"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("username"))
+		}
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		return
+	}
+
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		// search mode, all, name, id
+		switch ctx.DefaultQuery("search", "all") {
+		case "all":
+			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, db.GerUsersIDByIDLike(keyword)))
+		case "name":
+			scopes = append(scopes, db.WhereUsernameLike(keyword))
+		case "id":
+			scopes = append(scopes, db.WhereIDIn(db.GerUsersIDByIDLike(keyword)))
+		}
+	}
+	scopes = append(scopes, db.PreloadRoomUserRelation(preloadScopes...))
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"hidden":       room.Settings.Hidden,
-		"needPassword": room.NeedPassword(),
+		"total": db.GetAllUserCount(scopes...),
+		"list":  genRoomUserListResp(db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)),
 	}))
 }

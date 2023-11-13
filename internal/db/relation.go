@@ -7,40 +7,52 @@ import (
 	"gorm.io/gorm"
 )
 
-func GetRoomUserRelation(roomID, userID string) (*model.RoomUserRelation, error) {
+type CreateRoomUserRelationConfig func(r *model.RoomUserRelation)
+
+func WithRoomUserRelationStatus(status model.RoomUserStatus) CreateRoomUserRelationConfig {
+	return func(r *model.RoomUserRelation) {
+		r.Status = status
+	}
+}
+
+func WithRoomUserRelationPermissions(permissions model.RoomUserPermission) CreateRoomUserRelationConfig {
+	return func(r *model.RoomUserRelation) {
+		r.Permissions = permissions
+	}
+}
+
+func FirstOrCreateRoomUserRelation(roomID, userID string, conf ...CreateRoomUserRelationConfig) (*model.RoomUserRelation, error) {
 	roomUserRelation := &model.RoomUserRelation{}
-	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).Attrs(&model.RoomUserRelation{
+	d := &model.RoomUserRelation{
 		RoomID:      roomID,
 		UserID:      userID,
-		Role:        model.RoomRoleUser,
 		Permissions: model.DefaultPermissions,
-	}).FirstOrInit(roomUserRelation).Error
+	}
+	for _, c := range conf {
+		c(d)
+	}
+	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).Attrs(d).FirstOrCreate(roomUserRelation).Error
+	return roomUserRelation, err
+}
+
+func GetRoomUserRelation(roomID, userID string) (*model.RoomUserRelation, error) {
+	roomUserRelation := &model.RoomUserRelation{}
+	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).First(roomUserRelation).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return roomUserRelation, errors.New("room or user not found")
 	}
 	return roomUserRelation, err
 }
 
-func CreateRoomUserRelation(roomID, userID string, role model.RoomRole, permissions model.Permission) (*model.RoomUserRelation, error) {
-	roomUserRelation := &model.RoomUserRelation{
-		RoomID:      roomID,
-		UserID:      userID,
-		Role:        role,
-		Permissions: permissions,
-	}
-	err := db.Create(roomUserRelation).Error
-	return roomUserRelation, err
-}
-
-func SetUserRole(roomID string, userID string, role model.RoomRole) error {
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("role", role).Error
+func SetRoomUserStatus(roomID string, userID string, status model.RoomUserStatus) error {
+	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("status", status).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room or user not found")
 	}
 	return err
 }
 
-func SetUserPermission(roomID string, userID string, permission model.Permission) error {
+func SetUserPermission(roomID string, userID string, permission model.RoomUserPermission) error {
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room or user not found")
@@ -48,7 +60,7 @@ func SetUserPermission(roomID string, userID string, permission model.Permission
 	return err
 }
 
-func AddUserPermission(roomID string, userID string, permission model.Permission) error {
+func AddUserPermission(roomID string, userID string, permission model.RoomUserPermission) error {
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions | ?", permission)).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room or user not found")
@@ -56,7 +68,7 @@ func AddUserPermission(roomID string, userID string, permission model.Permission
 	return err
 }
 
-func RemoveUserPermission(roomID string, userID string, permission model.Permission) error {
+func RemoveUserPermission(roomID string, userID string, permission model.RoomUserPermission) error {
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions & ?", ^permission)).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room or user not found")
@@ -64,10 +76,14 @@ func RemoveUserPermission(roomID string, userID string, permission model.Permiss
 	return err
 }
 
-func DeleteUserPermission(roomID string, userID string) error {
-	err := db.Unscoped().Where("room_id = ? AND user_id = ?", roomID, userID).Delete(&model.RoomUserRelation{}).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
+func GetAllRoomUsersRelation(roomID string, scopes ...func(*gorm.DB) *gorm.DB) []*model.RoomUserRelation {
+	var roomUserRelations []*model.RoomUserRelation
+	db.Where("room_id = ?", roomID).Scopes(scopes...).Find(&roomUserRelations)
+	return roomUserRelations
+}
+
+func GetAllRoomUsersRelationCount(roomID string, scopes ...func(*gorm.DB) *gorm.DB) int64 {
+	var count int64
+	db.Model(&model.RoomUserRelation{}).Where("room_id = ?", roomID).Scopes(scopes...).Count(&count)
+	return count
 }

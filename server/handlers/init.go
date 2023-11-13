@@ -1,28 +1,13 @@
 package handlers
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
-	"github.com/synctv-org/synctv/public"
 	Vbilibili "github.com/synctv-org/synctv/server/handlers/vendors/bilibili"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
 )
 
 func Init(e *gin.Engine) {
-	{
-		e.GET("/", func(ctx *gin.Context) {
-			ctx.Redirect(http.StatusMovedPermanently, "/web/")
-		})
-
-		web := e.Group("/web")
-
-		web.Use(middlewares.NewDistCacheControl("/web/"))
-
-		web.StaticFS("", http.FS(public.Public))
-	}
-
 	{
 		api := e.Group("/api")
 
@@ -49,17 +34,36 @@ func Init(e *gin.Engine) {
 
 				admin.POST("/settings", EditAdminSettings)
 
-				admin.GET("/users", Users)
+				{
+					user := admin.Group("/user")
 
-				admin.GET("/rooms", Rooms)
+					// 查找用户
+					user.GET("/list", Users)
 
-				admin.POST("/approve/user", ApprovePendingUser)
+					user.POST("/approve", ApprovePendingUser)
 
-				admin.POST("/approve/room", ApprovePendingRoom)
+					user.POST("/ban", BanUser)
 
-				admin.POST("/ban/user", BanUser)
+					user.POST("/unban", UnBanUser)
 
-				admin.POST("/ban/room", BanRoom)
+					// 查找某个用户的房间
+					user.GET("/rooms", GetUserRooms)
+				}
+
+				{
+					room := admin.Group("/room")
+
+					// 查找房间
+					room.GET("/list", Rooms)
+
+					room.POST("/room", ApprovePendingRoom)
+
+					room.POST("/ban", BanRoom)
+
+					room.POST("/unban", UnBanRoom)
+
+					room.GET("/users", GetRoomUsers)
+				}
 			}
 
 			{
@@ -90,7 +94,11 @@ func Init(e *gin.Engine) {
 
 			needAuthRoom.POST("/pwd", SetRoomPassword)
 
-			needAuthRoom.GET("/setting", RoomSetting)
+			needAuthRoom.GET("/settings", RoomSetting)
+
+			needAuthRoom.POST("/settings", SetRoomSetting)
+
+			needAuthRoom.GET("/users", RoomUsers)
 		}
 
 		{
@@ -162,6 +170,8 @@ func Init(e *gin.Engine) {
 				login.POST("/sms/login", Vbilibili.LoginWithSMS)
 
 				bilibili.POST("/parse", Vbilibili.Parse)
+
+				bilibili.GET("/vendors", Vbilibili.Vendors)
 
 				bilibili.GET("/me", Vbilibili.Me)
 

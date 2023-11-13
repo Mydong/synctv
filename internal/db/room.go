@@ -11,7 +11,7 @@ import (
 
 type CreateRoomConfig func(r *model.Room)
 
-func WithSetting(setting model.Settings) CreateRoomConfig {
+func WithSetting(setting model.RoomSettings) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.Settings = setting
 	}
@@ -23,8 +23,8 @@ func WithCreator(creator *model.User) CreateRoomConfig {
 		r.GroupUserRelations = []model.RoomUserRelation{
 			{
 				UserID:      creator.ID,
-				Role:        model.RoomRoleCreator,
-				Permissions: model.AllPermissions,
+				Status:      model.RoomUserStatusActive,
+				Permissions: model.PermissionAll,
 			},
 		}
 	}
@@ -42,27 +42,41 @@ func WithStatus(status model.RoomStatus) CreateRoomConfig {
 	}
 }
 
-func CreateRoom(name, password string, conf ...CreateRoomConfig) (*model.Room, error) {
-	var hashedPassword []byte
-	if password != "" {
-		var err error
-		hashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
-		if err != nil {
-			return nil, err
-		}
-	}
+// if maxCount is 0, it will be ignored
+func CreateRoom(name, password string, maxCount int64, conf ...CreateRoomConfig) (*model.Room, error) {
 	r := &model.Room{
-		Name:           name,
-		HashedPassword: hashedPassword,
+		Name: name,
 	}
 	for _, c := range conf {
 		c(r)
 	}
-	err := db.Create(r).Error
-	if err != nil && errors.Is(err, gorm.ErrDuplicatedKey) {
-		return r, errors.New("room already exists")
+	if password != "" {
+		var err error
+		r.HashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return r, err
+
+	tx := db.Begin()
+	if maxCount != 0 {
+		var count int64
+		tx.Model(&model.Room{}).Where("creator_id = ?", r.CreatorID).Count(&count)
+		if count >= maxCount {
+			tx.Rollback()
+			return nil, errors.New("room count is over limit")
+		}
+	}
+	err := tx.Create(r).Error
+	if err != nil {
+		tx.Rollback()
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return r, errors.New("room already exists")
+		}
+		return r, err
+	}
+	tx.Commit()
+	return r, nil
 }
 
 func GetRoomByID(id string) (*model.Room, error) {
@@ -77,41 +91,12 @@ func GetRoomByID(id string) (*model.Room, error) {
 	return r, err
 }
 
-func GetRoomAndCreatorByID(id string) (*model.Room, error) {
-	r := &model.Room{}
-	err := db.Preload("Creator").Where("id = ?", id).First(r).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return r, errors.New("room not found")
-	}
-	return r, err
-}
-
-func ChangeRoomSetting(roomID string, setting model.Settings) error {
+func SaveRoomSettings(roomID string, setting model.RoomSettings) error {
 	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("setting", setting).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room not found")
 	}
 	return err
-}
-
-func ChangeUserPermission(roomID, userID string, permission model.Permission) error {
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
-}
-
-func HasPermission(roomID, userID string, permission model.Permission) (bool, error) {
-	ur := &model.RoomUserRelation{}
-	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).First(ur).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = errors.New("room or user not found")
-		}
-		return false, err
-	}
-	return ur.Permissions.Has(permission), nil
 }
 
 func DeleteRoomByID(roomID string) error {
@@ -196,4 +181,8 @@ func SetRoomStatus(roomID string, status model.RoomStatus) error {
 		return errors.New("room not found")
 	}
 	return err
+}
+
+func SetRoomStatusByCreator(userID string, status model.RoomStatus) error {
+	return db.Model(&model.Room{}).Where("creator_id = ?", userID).Update("status", status).Error
 }

@@ -6,11 +6,10 @@ import (
 	"regexp"
 
 	json "github.com/json-iterator/go"
-	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
-	"github.com/synctv-org/synctv/internal/settings"
 
 	"github.com/gin-gonic/gin"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
 var (
@@ -40,9 +39,9 @@ func (f FormatEmptyPasswordError) Error() string {
 }
 
 type CreateRoomReq struct {
-	RoomName string         `json:"roomName"`
-	Password string         `json:"password"`
-	Setting  model.Settings `json:"setting"`
+	RoomName string               `json:"roomName"`
+	Password string               `json:"password"`
+	Setting  dbModel.RoomSettings `json:"setting"`
 }
 
 func (c *CreateRoomReq) Decode(ctx *gin.Context) error {
@@ -64,8 +63,6 @@ func (c *CreateRoomReq) Validate() error {
 		} else if !alnumPrintReg.MatchString(c.Password) {
 			return ErrPasswordHasInvalidChar
 		}
-	} else if settings.CreateRoomNeedPwd.Get() {
-		return FormatEmptyPasswordError("room")
 	}
 
 	return nil
@@ -99,10 +96,12 @@ func (s *SetRoomPasswordReq) Decode(ctx *gin.Context) error {
 }
 
 func (s *SetRoomPasswordReq) Validate() error {
-	if len(s.Password) > 32 {
-		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(s.Password) {
-		return ErrPasswordHasInvalidChar
+	if s.Password != "" {
+		if len(s.Password) > 32 {
+			return ErrPasswordTooLong
+		} else if !alnumPrintReg.MatchString(s.Password) {
+			return ErrPasswordHasInvalidChar
+		}
 	}
 	return nil
 }
@@ -121,4 +120,24 @@ func (r *RoomIDReq) Validate() error {
 	}
 
 	return nil
+}
+
+type SetRoomSettingReq dbModel.RoomSettings
+
+func (s *SetRoomSettingReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(s)
+}
+
+func (s *SetRoomSettingReq) Validate() error {
+	return nil
+}
+
+type RoomUsersResp struct {
+	UserID      string                     `json:"userId"`
+	Username    string                     `json:"username"`
+	Role        dbModel.Role               `json:"role"`
+	JoinAt      int64                      `json:"joinAt"`
+	RoomID      string                     `json:"roomId"`
+	Status      dbModel.RoomUserStatus     `json:"status"`
+	Permissions dbModel.RoomUserPermission `json:"permissions"`
 }

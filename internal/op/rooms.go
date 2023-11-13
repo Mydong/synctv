@@ -8,14 +8,14 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
-	synccache "github.com/synctv-org/synctv/utils/syncCache"
+	"github.com/zijiren233/gencontainer/synccache"
 	"github.com/zijiren233/gencontainer/vec"
 )
 
 var roomCache *synccache.SyncCache[string, *Room]
 
-func CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*Room, error) {
-	r, err := db.CreateRoom(name, password, conf...)
+func CreateRoom(name, password string, maxCount int64, conf ...db.CreateRoomConfig) (*Room, error) {
+	r, err := db.CreateRoom(name, password, maxCount, conf...)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,6 @@ func InitRoom(room *model.Room) (*Room, error) {
 
 var (
 	ErrRoomPending = errors.New("room pending, please wait for admin to approve")
-	ErrRoomStopped = errors.New("room stopped")
 	ErrRoomBanned  = errors.New("room banned")
 )
 
@@ -51,8 +50,6 @@ func LoadOrInitRoom(room *model.Room) (*Room, error) {
 		return nil, ErrRoomBanned
 	case model.RoomStatusPending:
 		return nil, ErrRoomPending
-	case model.RoomStatusStopped:
-		return nil, ErrRoomStopped
 	}
 	t := time.Duration(settings.RoomTTL.Get())
 	i, loaded := roomCache.LoadOrStore(room.ID, &Room{
@@ -69,15 +66,23 @@ func LoadOrInitRoom(room *model.Room) (*Room, error) {
 	return i.Value(), nil
 }
 
-func DeleteRoom(roomID string) error {
+func DeleteRoomByID(roomID string) error {
 	err := db.DeleteRoomByID(roomID)
 	if err != nil {
 		return err
 	}
-	return CloseRoom(roomID)
+	return CloseRoomByID(roomID)
 }
 
-func CloseRoom(roomID string) error {
+func CompareAndDeleteRoom(room *Room) error {
+	err := CompareAndCloseRoom(room)
+	if err != nil {
+		return err
+	}
+	return db.DeleteRoomByID(room.ID)
+}
+
+func CloseRoomByID(roomID string) error {
 	r, loaded := roomCache.LoadAndDelete(roomID)
 	if loaded {
 		r.Value().close()
@@ -184,12 +189,14 @@ func GetAllRoomsInCacheWithoutHidden() []*Room {
 }
 
 type RoomInfo struct {
-	RoomId       string `json:"roomId"`
-	RoomName     string `json:"roomName"`
-	PeopleNum    int64  `json:"peopleNum"`
-	NeedPassword bool   `json:"needPassword"`
-	Creator      string `json:"creator"`
-	CreatedAt    int64  `json:"createdAt"`
+	RoomId       string           `json:"roomId"`
+	RoomName     string           `json:"roomName"`
+	PeopleNum    int64            `json:"peopleNum"`
+	NeedPassword bool             `json:"needPassword"`
+	CreatorID    string           `json:"creatorId"`
+	Creator      string           `json:"creator"`
+	CreatedAt    int64            `json:"createdAt"`
+	Status       model.RoomStatus `json:"status"`
 }
 
 func GetRoomHeapInCacheWithoutHidden() []*RoomInfo {
@@ -212,5 +219,17 @@ func GetRoomHeapInCacheWithoutHidden() []*RoomInfo {
 		}
 		return true
 	})
-	return rooms.Slice()
+	return rooms.SortStable().Slice()
+}
+
+func SetRoomStatus(roomID string, status model.RoomStatus) error {
+	err := db.SetRoomStatus(roomID, status)
+	if err != nil {
+		return err
+	}
+	e, loaded := roomCache.LoadAndDelete(roomID)
+	if loaded {
+		e.Value().close()
+	}
+	return nil
 }

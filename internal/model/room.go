@@ -9,23 +9,35 @@ import (
 	"gorm.io/gorm"
 )
 
-type RoomStatus string
+type RoomStatus uint64
 
 const (
-	RoomStatusBanned  RoomStatus = "banned"
-	RoomStatusPending RoomStatus = "pending"
-	RoomStatusStopped RoomStatus = "stopped"
-	RoomStatusActive  RoomStatus = "active"
+	RoomStatusBanned  RoomStatus = 1
+	RoomStatusPending RoomStatus = 2
+	RoomStatusActive  RoomStatus = 3
 )
 
+func (r RoomStatus) String() string {
+	switch r {
+	case RoomStatusBanned:
+		return "banned"
+	case RoomStatusPending:
+		return "pending"
+	case RoomStatusActive:
+		return "active"
+	default:
+		return "unknown"
+	}
+}
+
 type Room struct {
-	ID                 string `gorm:"not null;primaryKey;type:varchar(36)" json:"id"`
+	ID                 string `gorm:"not null;primaryKey;type:varchar(32)" json:"id"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
-	Status             RoomStatus `gorm:"not null;default:pending"`
-	Name               string     `gorm:"not null;uniqueIndex"`
-	Settings           Settings   `gorm:"embedded;embeddedPrefix:settings_"`
-	CreatorID          string     `gorm:"index"`
+	Status             RoomStatus   `gorm:"not null;default:2"`
+	Name               string       `gorm:"not null;uniqueIndex"`
+	Settings           RoomSettings `gorm:"embedded;embeddedPrefix:settings_"`
+	CreatorID          string       `gorm:"index"`
 	HashedPassword     []byte
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
@@ -38,8 +50,14 @@ func (r *Room) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-type Settings struct {
-	Hidden bool `json:"hidden"`
+type RoomSettings struct {
+	Hidden                 bool               `json:"hidden"`
+	CanCreateMovie         bool               `gorm:"default:true" json:"canCreateMovie"`
+	CanEditCurrent         bool               `gorm:"default:true" json:"canEditCurrent"`
+	CanSendChat            bool               `gorm:"default:true" json:"canSendChat"`
+	DisableJoinNewUser     bool               `gorm:"default:false" json:"disableJoinNewUser"`
+	JoinNeedReview         bool               `gorm:"default:false" json:"joinNeedReview"`
+	UserDefaultPermissions RoomUserPermission `json:"userDefaultPermissions"`
 }
 
 func (r *Room) NeedPassword() bool {
@@ -56,10 +74,6 @@ func (r *Room) IsBanned() bool {
 
 func (r *Room) IsPending() bool {
 	return r.Status == RoomStatusPending
-}
-
-func (r *Room) IsStopped() bool {
-	return r.Status == RoomStatusStopped
 }
 
 func (r *Room) IsActive() bool {

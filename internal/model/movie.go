@@ -9,12 +9,13 @@ import (
 
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/utils"
-	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
+	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/rwmap"
 	"gorm.io/gorm"
 )
 
 type Movie struct {
-	ID        string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	ID        string    `gorm:"primaryKey;type:varchar(32)" json:"id"`
 	CreatedAt time.Time `json:"-"`
 	UpdatedAt time.Time `json:"-"`
 	Position  uint      `gorm:"not null" json:"-"`
@@ -56,7 +57,7 @@ func (m *BaseMovie) Validate() error {
 	case m.RtmpSource && m.Proxy:
 		return errors.New("rtmp source and proxy can't be true at the same time")
 	case m.Live && m.RtmpSource:
-		if !conf.Conf.Rtmp.Enable {
+		if !conf.Conf.Server.Rtmp.Enable {
 			return errors.New("rtmp is not enabled")
 		}
 	case m.Live && m.Proxy:
@@ -67,7 +68,7 @@ func (m *BaseMovie) Validate() error {
 		if err != nil {
 			return err
 		}
-		if utils.IsLocalIP(u.Host) {
+		if !conf.Conf.Proxy.AllowProxyToLocal && utils.IsLocalIP(u.Host) {
 			return errors.New("local ip is not allowed")
 		}
 		switch u.Scheme {
@@ -89,7 +90,7 @@ func (m *BaseMovie) Validate() error {
 		if err != nil {
 			return err
 		}
-		if utils.IsLocalIP(u.Host) {
+		if !conf.Conf.Proxy.AllowProxyToLocal && utils.IsLocalIP(u.Host) {
 			return errors.New("local ip is not allowed")
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
@@ -114,19 +115,10 @@ func (m *BaseMovie) Validate() error {
 func (m *BaseMovie) validateVendorMovie() error {
 	switch m.VendorInfo.Vendor {
 	case StreamingVendorBilibili:
-		info := m.VendorInfo.Bilibili
-		if info.Bvid == "" && info.Epid == 0 {
-			return fmt.Errorf("bvid and epid are empty")
+		err := m.VendorInfo.Bilibili.Validate()
+		if err != nil {
+			return err
 		}
-
-		if info.Bvid != "" && info.Epid != 0 {
-			return fmt.Errorf("bvid and epid can't be set at the same time")
-		}
-
-		if info.Bvid != "" && info.Cid == 0 {
-			return fmt.Errorf("cid is empty")
-		}
-
 		if m.Headers == nil {
 			m.Headers = map[string]string{
 				"Referer":    "https://www.bilibili.com",
@@ -136,7 +128,6 @@ func (m *BaseMovie) validateVendorMovie() error {
 			m.Headers["Referer"] = "https://www.bilibili.com"
 			m.Headers["User-Agent"] = utils.UA
 		}
-
 	default:
 		return fmt.Errorf("vendor not support")
 	}
@@ -151,26 +142,65 @@ type VendorInfo struct {
 }
 
 type BilibiliVendorInfo struct {
-	Bvid    string                                                          `json:"bvid,omitempty"`
-	Cid     uint                                                            `json:"cid,omitempty"`
-	Epid    uint                                                            `json:"epid,omitempty"`
-	Quality uint                                                            `json:"quality,omitempty"`
-	Cache   atomic.Pointer[refreshcache.RefreshCache[*BilibiliVendorCache]] `gorm:"-:all" json:"-"`
+	Bvid       string              `json:"bvid,omitempty"`
+	Cid        uint64              `json:"cid,omitempty"`
+	Epid       uint64              `json:"epid,omitempty"`
+	Quality    uint64              `json:"quality,omitempty"`
+	VendorName string              `json:"vendorName,omitempty"`
+	Cache      BilibiliVendorCache `gorm:"-:all" json:"-"`
+}
+
+func (b *BilibiliVendorInfo) Validate() error {
+	if b.Bvid == "" && b.Epid == 0 {
+		return fmt.Errorf("bvid and epid are empty")
+	}
+
+	if b.Bvid != "" && b.Epid != 0 {
+		return fmt.Errorf("bvid and epid can't be set at the same time")
+	}
+
+	if b.Bvid != "" && b.Cid == 0 {
+		return fmt.Errorf("cid is empty")
+	}
+
+	return nil
 }
 
 type BilibiliVendorCache struct {
+	URL rwmap.RWMap[string, *refreshcache.RefreshCache[string]]
+	MPD atomic.Pointer[refreshcache.RefreshCache[*MPDCache]]
+}
+
+type MPDCache struct {
 	MPDFile string
 	URLs    []string
 }
 
-func (b *BilibiliVendorInfo) InitOrLoadCache(initCache func() *refreshcache.RefreshCache[*BilibiliVendorCache]) *refreshcache.RefreshCache[*BilibiliVendorCache] {
-	if c := b.Cache.Load(); c != nil {
-		return c
+func (b *BilibiliVendorInfo) InitOrLoadURLCache(id string, initCache func(*BilibiliVendorInfo) (*refreshcache.RefreshCache[string], error)) (*refreshcache.RefreshCache[string], error) {
+	if c, loaded := b.Cache.URL.Load(id); loaded {
+		return c, nil
 	}
-	c := initCache()
-	if b.Cache.CompareAndSwap(nil, c) {
-		return c
+	c, err := initCache(b)
+	if err != nil {
+		return nil, err
+	}
+
+	c, _ = b.Cache.URL.LoadOrStore(id, c)
+
+	return c, nil
+}
+
+func (b *BilibiliVendorInfo) InitOrLoadMPDCache(initCache func(*BilibiliVendorInfo) (*refreshcache.RefreshCache[*MPDCache], error)) (*refreshcache.RefreshCache[*MPDCache], error) {
+	if c := b.Cache.MPD.Load(); c != nil {
+		return c, nil
+	}
+	c, err := initCache(b)
+	if err != nil {
+		return nil, err
+	}
+	if b.Cache.MPD.CompareAndSwap(nil, c) {
+		return c, nil
 	} else {
-		return b.Cache.Load()
+		return b.InitOrLoadMPDCache(initCache)
 	}
 }

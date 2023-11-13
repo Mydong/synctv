@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -16,18 +17,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/rtmp"
+	"github.com/synctv-org/synctv/internal/vendor"
 	pb "github.com/synctv-org/synctv/proto/message"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
-	"github.com/synctv-org/synctv/vendors/bilibili"
+	"github.com/synctv-org/vendors/api/bilibili"
 	"github.com/zencoder/go-dash/v3/mpd"
+	"github.com/zijiren233/gencontainer/refreshcache"
 	"github.com/zijiren233/livelib/protocol/hls"
 	"github.com/zijiren233/livelib/protocol/httpflv"
 )
@@ -65,7 +66,7 @@ func MovieList(ctx *gin.Context) {
 
 	m := room.GetMoviesWithPage(page, max)
 
-	current, err := genCurrent(room.Current(), user.ID)
+	current, err := genCurrent(ctx, room.Current(), user.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -93,9 +94,9 @@ func MovieList(ctx *gin.Context) {
 	}))
 }
 
-func genCurrent(current *op.Current, userID string) (*op.Current, error) {
+func genCurrent(ctx context.Context, current *op.Current, userID string) (*op.Current, error) {
 	if current.Movie.Base.VendorInfo.Vendor != "" {
-		return current, parse2VendorMovie(userID, &current.Movie)
+		return current, parse2VendorMovie(ctx, userID, &current.Movie)
 	}
 	return current, nil
 }
@@ -120,7 +121,7 @@ func CurrentMovie(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	current, err := genCurrent(room.Current(), user.ID)
+	current, err := genCurrent(ctx, room.Current(), user.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -147,7 +148,6 @@ func Movies(ctx *gin.Context) {
 
 	mresp := make([]*model.MoviesResp, len(m))
 	for i, v := range m {
-		logrus.Info(m[i].Base.Headers)
 		mresp[i] = &model.MoviesResp{
 			Id:      v.ID,
 			Base:    v.Base,
@@ -175,10 +175,12 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	mi := user.NewMovie((*dbModel.BaseMovie)(&req))
-
-	err := room.AddMovie(mi)
+	err := user.AddMovieToRoom(room, (*dbModel.BaseMovie)(&req))
 	if err != nil {
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -206,24 +208,21 @@ func PushMovies(ctx *gin.Context) {
 		return
 	}
 
-	var ms []*dbModel.Movie = make([]*dbModel.Movie, len(req))
+	var ms []*dbModel.BaseMovie = make([]*dbModel.BaseMovie, len(req))
 
 	for i, v := range req {
 		m := (*dbModel.BaseMovie)(v)
-		err := m.Validate()
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-		ms[i] = user.NewMovie(m)
+		ms[i] = m
 	}
 
-	for _, m := range ms {
-		err := room.AddMovie(m)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+	err := user.AddMoviesToRoom(room, ms)
+	if err != nil {
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 			return
 		}
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
@@ -254,7 +253,7 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	if !user.HasPermission(room.ID, dbModel.CanCreateUserPublishKey) && movie.CreatorID != user.ID {
+	if movie.CreatorID != user.ID && !user.HasRoomPermission(room, dbModel.PermissionEditUser) {
 		ctx.AbortWithStatus(http.StatusForbidden)
 		return
 	}
@@ -270,7 +269,7 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	host := conf.Conf.Rtmp.CustomPublishHost
+	host := conf.Conf.Server.Rtmp.CustomPublishHost
 	if host == "" {
 		host = ctx.Request.Host
 	}
@@ -292,7 +291,7 @@ func EditMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.UpdateMovie(req.Id, dbModel.BaseMovie(req.PushMovieReq)); err != nil {
+	if err := user.UpdateMovie(room, req.Id, dbModel.BaseMovie(req.PushMovieReq)); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -320,12 +319,10 @@ func DelMovie(ctx *gin.Context) {
 		return
 	}
 
-	for _, id := range req.Ids {
-		err := room.DeleteMovieByID(id)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
+	err := user.DeleteMoviesByID(room, req.Ids)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
@@ -345,7 +342,7 @@ func ClearMovies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	if err := room.ClearMovies(); err != nil {
+	if err := user.ClearMovies(room); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -402,13 +399,17 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	}
 
 	if req.Id == "" {
-		room.SetCurrentMovie(&dbModel.Movie{}, false)
-	} else if err := room.ChangeCurrentMovie(req.Id, true); err != nil {
+		err := user.SetCurrentMovie(room, &dbModel.Movie{}, false)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+	} else if err := user.SetCurrentMovieByID(room, req.Id, true); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	current, err := genCurrent(room.Current(), user.ID)
+	current, err := genCurrent(ctx, room.Current(), user.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -445,7 +446,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 		if err := room.Broadcast(&op.ElementMessage{
 			ElementMessage: m,
 			BeforeSendFunc: func(sendTo *op.User) error {
-				current, err := genCurrent(room.Current(), sendTo.ID)
+				current, err := genCurrent(ctx, room.Current(), sendTo.ID)
 				if err != nil {
 					return err
 				}
@@ -499,8 +500,12 @@ func ProxyMovie(ctx *gin.Context) {
 }
 
 func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
-	if l, err := utils.ParseURLIsLocalIP(u); err != nil || l {
-		return err
+	if !conf.Conf.Proxy.AllowProxyToLocal {
+		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
+			return err
+		} else if l {
+			return errors.New("not allow proxy to local")
+		}
 	}
 	r, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -532,10 +537,6 @@ func (e FormatErrNotSupportFileType) Error() string {
 }
 
 func JoinLive(ctx *gin.Context) {
-	if !conf.Conf.Proxy.LiveProxy && !conf.Conf.Rtmp.Enable {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy and rtmp source is not enabled"))
-		return
-	}
 	room := ctx.MustGet("room").(*op.Room)
 	// user := ctx.MustGet("user").(*op.User)
 
@@ -559,7 +560,7 @@ func JoinLive(ctx *gin.Context) {
 		ctx.Header("Cache-Control", "no-store")
 		b, err := channel.GenM3U8File(func(tsName string) (tsPath string) {
 			ext := "ts"
-			if conf.Conf.Rtmp.TsDisguisedAsPng {
+			if conf.Conf.Server.Rtmp.TsDisguisedAsPng {
 				ext = "png"
 			}
 			return fmt.Sprintf("/api/movie/live/%s/%s.%s", channelName, tsName, ext)
@@ -570,7 +571,7 @@ func JoinLive(ctx *gin.Context) {
 		}
 		ctx.Data(http.StatusOK, hls.M3U8ContentType, b)
 	case ".ts":
-		if conf.Conf.Rtmp.TsDisguisedAsPng {
+		if conf.Conf.Server.Rtmp.TsDisguisedAsPng {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 			return
 		}
@@ -582,7 +583,7 @@ func JoinLive(ctx *gin.Context) {
 		ctx.Header("Cache-Control", "public, max-age=90")
 		ctx.Data(http.StatusOK, hls.TSContentType, b)
 	case ".png":
-		if !conf.Conf.Rtmp.TsDisguisedAsPng {
+		if !conf.Conf.Server.Rtmp.TsDisguisedAsPng {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 			return
 		}
@@ -607,32 +608,48 @@ func JoinLive(ctx *gin.Context) {
 	}
 }
 
-func initBilibiliCache(cookies []*http.Cookie, bvid string, cid, epid uint, roomID, movieID string) *refreshcache.RefreshCache[*dbModel.BilibiliVendorCache] {
-	return refreshcache.NewRefreshCache[*dbModel.BilibiliVendorCache](func() (*dbModel.BilibiliVendorCache, error) {
-		cli, err := bilibili.NewClient(cookies)
-		if err != nil {
-			return nil, err
-		}
+func initBilibiliMPDCache(ctx context.Context, cli vendor.Bilibili, cookies []*http.Cookie, bvid string, cid, epid uint64, roomID, movieID string) *refreshcache.RefreshCache[*dbModel.MPDCache] {
+	return refreshcache.NewRefreshCache[*dbModel.MPDCache](func() (*dbModel.MPDCache, error) {
 		var m *mpd.MPD
 		if bvid != "" && cid != 0 {
-			m, err = cli.GetDashVideoURL(0, bvid, cid)
+			resp, err := cli.GetDashVideoURL(ctx, &bilibili.GetDashVideoURLReq{
+				Cookies: utils.HttpCookieToMap(cookies),
+				Bvid:    bvid,
+				Cid:     cid,
+			})
+			if err != nil {
+				return nil, err
+			}
+			m, err = mpd.ReadFromString(resp.Mpd)
+			if err != nil {
+				return nil, err
+			}
 		} else if epid != 0 {
-			m, err = cli.GetDashPGCURL(epid, 0)
+			resp, err := cli.GetDashPGCURL(ctx, &bilibili.GetDashPGCURLReq{
+				Cookies: utils.HttpCookieToMap(cookies),
+				Epid:    epid,
+			})
+			if err != nil {
+				return nil, err
+			}
+			m, err = mpd.ReadFromString(resp.Mpd)
+			if err != nil {
+				return nil, err
+			}
 		} else {
 			return nil, errors.New("bvid and epid are empty")
-		}
-		if err != nil {
-			return nil, err
 		}
 		m.BaseURL = append(m.BaseURL, fmt.Sprintf("/api/movie/proxy/%s/", roomID))
 		id := 0
 		movies := []string{}
-		for _, as := range m.GetCurrentPeriod().AdaptationSets {
-			for _, r := range as.Representations {
-				for i := range r.BaseURL {
-					movies = append(movies, r.BaseURL[i])
-					r.BaseURL[i] = fmt.Sprintf("%s?id=%d", movieID, id)
-					id++
+		for _, p := range m.Periods {
+			for _, as := range p.AdaptationSets {
+				for _, r := range as.Representations {
+					for i := range r.BaseURL {
+						movies = append(movies, r.BaseURL[i])
+						r.BaseURL[i] = fmt.Sprintf("%s?id=%d", movieID, id)
+						id++
+					}
 				}
 			}
 		}
@@ -640,30 +657,64 @@ func initBilibiliCache(cookies []*http.Cookie, bvid string, cid, epid uint, room
 		if err != nil {
 			return nil, err
 		}
-		return &dbModel.BilibiliVendorCache{
+		return &dbModel.MPDCache{
 			URLs:    movies,
 			MPDFile: s,
 		}, nil
 	}, time.Minute*119)
 }
 
+func initBilibiliShareCache(ctx context.Context, cli vendor.Bilibili, cookies []*http.Cookie, bvid string, cid, epid uint64) *refreshcache.RefreshCache[string] {
+	return refreshcache.NewRefreshCache[string](func() (string, error) {
+		var u string
+		if bvid != "" {
+			resp, err := cli.GetVideoURL(ctx, &bilibili.GetVideoURLReq{
+				Cookies: utils.HttpCookieToMap(cookies),
+				Bvid:    bvid,
+				Cid:     cid,
+			})
+			if err != nil {
+				return "", err
+			}
+			u = resp.Url
+		} else if epid != 0 {
+			resp, err := cli.GetPGCURL(ctx, &bilibili.GetPGCURLReq{
+				Cookies: utils.HttpCookieToMap(cookies),
+				Epid:    epid,
+			})
+			if err != nil {
+				return "", err
+			}
+			u = resp.Url
+		} else {
+			return "", errors.New("bvid and epid are empty")
+		}
+		return u, nil
+	}, time.Minute*119)
+}
+
 func proxyVendorMovie(ctx *gin.Context, movie *dbModel.Movie) {
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
-		info := movie.Base.VendorInfo.Bilibili
-		bvc, err := movie.Base.VendorInfo.Bilibili.InitOrLoadCache(func() *refreshcache.RefreshCache[*dbModel.BilibiliVendorCache] {
-			vendor, err := db.FirstOrInitVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
+		bvc, err := movie.Base.VendorInfo.Bilibili.InitOrLoadMPDCache(func(info *dbModel.BilibiliVendorInfo) (*refreshcache.RefreshCache[*dbModel.MPDCache], error) {
+			v, err := db.FirstOrInitVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
 			if err != nil {
-				return nil
+				return nil, err
 			}
-			return initBilibiliCache(vendor.Cookies, info.Bvid, info.Cid, info.Epid, movie.RoomID, movie.ID)
-		}).Get()
+			return initBilibiliMPDCache(ctx, vendor.BilibiliClient(info.VendorName), v.Cookies, info.Bvid, info.Cid, info.Epid, movie.RoomID, movie.ID), nil
+		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
+		mpd, err := bvc.Get()
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+
 		if id := ctx.Query("id"); id == "" {
-			ctx.Data(http.StatusOK, "application/dash+xml", []byte(bvc.MPDFile))
+			ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpd.MPDFile))
 			return
 		} else {
 			streamId, err := strconv.Atoi(id)
@@ -671,11 +722,11 @@ func proxyVendorMovie(ctx *gin.Context, movie *dbModel.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 				return
 			}
-			if streamId >= len(bvc.URLs) {
+			if streamId >= len(mpd.URLs) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("stream id out of range"))
 				return
 			}
-			proxyURL(ctx, bvc.URLs[streamId], movie.Base.Headers)
+			proxyURL(ctx, mpd.URLs[streamId], movie.Base.Headers)
 			return
 		}
 
@@ -685,37 +736,31 @@ func proxyVendorMovie(ctx *gin.Context, movie *dbModel.Movie) {
 	}
 }
 
-func parse2VendorMovie(userID string, movie *dbModel.Movie) (err error) {
+func parse2VendorMovie(ctx context.Context, userID string, movie *dbModel.Movie) (err error) {
 	if movie.Base.VendorInfo.Shared {
 		userID = movie.CreatorID
 	}
 
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
-		info := movie.Base.VendorInfo.Bilibili
-
-		vendor, err := db.AssignFirstOrCreateVendorByUserIDAndVendor(userID, dbModel.StreamingVendorBilibili)
-		if err != nil {
-			return err
-		}
-		cli, err := bilibili.NewClient(vendor.Cookies)
-		if err != nil {
-			return err
-		}
-
 		if !movie.Base.Proxy {
-			var mu *bilibili.VideoURL
-			if info.Bvid != "" {
-				mu, err = cli.GetVideoURL(0, info.Bvid, info.Cid, bilibili.WithQuality(info.Quality))
-			} else if info.Epid != 0 {
-				mu, err = cli.GetPGCURL(info.Epid, 0, bilibili.WithQuality(info.Quality))
-			} else {
-				err = errors.New("bvid and epid are empty")
-			}
+			c, err := movie.Base.VendorInfo.Bilibili.InitOrLoadURLCache(userID, func(info *dbModel.BilibiliVendorInfo) (*refreshcache.RefreshCache[string], error) {
+				v, err := db.FirstOrInitVendorByUserIDAndVendor(userID, dbModel.StreamingVendorBilibili)
+				if err != nil {
+					return nil, err
+				}
+				return initBilibiliShareCache(ctx, vendor.BilibiliClient(info.VendorName), v.Cookies, info.Bvid, info.Cid, info.Epid), nil
+			})
 			if err != nil {
 				return err
 			}
-			movie.Base.Url = mu.URL
+
+			data, err := c.Get()
+			if err != nil {
+				return err
+			}
+
+			movie.Base.Url = data
 		} else {
 			movie.Base.Type = "mpd"
 		}

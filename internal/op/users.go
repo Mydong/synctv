@@ -8,7 +8,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
-	synccache "github.com/synctv-org/synctv/utils/syncCache"
+	"github.com/zijiren233/gencontainer/synccache"
 )
 
 var userCache gcache.Cache
@@ -121,5 +121,24 @@ func SetRoleByID(userID string, role model.Role) error {
 		return err
 	}
 	userCache.Remove(userID)
+
+	err = db.SetRoomStatusByCreator(userID, model.RoomStatusBanned)
+	if err != nil {
+		return err
+	}
+
+	switch role {
+	case model.RoleBanned:
+		roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
+			v := value.Value()
+			if v.CreatorID == userID {
+				if roomCache.CompareAndDelete(key, value) {
+					v.close()
+				}
+			}
+			return true
+		})
+	}
+
 	return nil
 }
