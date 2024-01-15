@@ -3,12 +3,10 @@ package providers
 import (
 	"context"
 	"fmt"
-	"hash/crc32"
 	"net/http"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
-	"github.com/zijiren233/stream"
 	"golang.org/x/oauth2"
 )
 
@@ -17,12 +15,19 @@ type BaiduProvider struct {
 	config oauth2.Config
 }
 
-func (p *BaiduProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"basic"}
-	p.config.Endpoint = oauth2.Endpoint{
-		AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
-		TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
+func newBaiduProvider() provider.ProviderInterface {
+	return &BaiduProvider{
+		config: oauth2.Config{
+			Scopes: []string{"basic"},
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
+				TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
+			},
+		},
 	}
+}
+
+func (p *BaiduProvider) Init(c provider.Oauth2Option) {
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -62,15 +67,15 @@ func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pro
 	}
 	return &provider.UserInfo{
 		Username:       ui.Uname,
-		ProviderUserID: uint(crc32.ChecksumIEEE(stream.StringToBytes(ui.Openid))),
+		ProviderUserID: ui.Openid,
 	}, nil
-}
-
-func init() {
-	RegisterProvider(new(BaiduProvider))
 }
 
 type baiduProviderUserInfo struct {
 	Uname  string `json:"uname"`
 	Openid string `json:"openid"`
+}
+
+func init() {
+	RegisterProvider(newBaiduProvider())
 }

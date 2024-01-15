@@ -29,11 +29,11 @@ func (r *Room) lazyInitHub() {
 	})
 }
 
-func (r *Room) ClientNum() int64 {
+func (r *Room) PeopleNum() int64 {
 	if r.hub == nil {
 		return 0
 	}
-	return r.hub.ClientNum()
+	return r.hub.PeopleNum()
 }
 
 func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
@@ -69,7 +69,7 @@ func (r *Room) CheckVersion(version uint32) bool {
 	return atomic.LoadUint32(&r.version) == version
 }
 
-func (r *Room) UpdateMovie(movieId string, movie model.BaseMovie) error {
+func (r *Room) UpdateMovie(movieId string, movie *model.BaseMovie) error {
 	return r.movies.Update(movieId, movie)
 }
 
@@ -185,12 +185,12 @@ func (r *Room) SetCurrentMovieByID(id string, play bool) error {
 	if err != nil {
 		return err
 	}
-	r.SetCurrentMovie(m.Movie, play)
+	r.SetCurrentMovie(&m.Movie, play)
 	return nil
 }
 
 func (r *Room) SetCurrentMovie(movie *model.Movie, play bool) {
-	r.current.SetMovie(*movie, play)
+	r.current.SetMovie(movie, play)
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 string) error {
@@ -201,14 +201,24 @@ func (r *Room) GetMoviesWithPage(page, pageSize int) []*Movie {
 	return r.movies.GetMoviesWithPage(page, pageSize)
 }
 
-func (r *Room) RegClient(user *User, conn *websocket.Conn) (*Client, error) {
+func (r *Room) NewClient(user *User, conn *websocket.Conn) (*Client, error) {
 	r.lazyInitHub()
-	return r.hub.RegClient(newClient(user, r, conn))
+	cli := newClient(user, r, conn)
+	err := r.hub.RegClient(cli)
+	if err != nil {
+		return nil, err
+	}
+	return cli, nil
 }
 
-func (r *Room) UnregisterClient(user *User) error {
+func (r *Room) RegClient(cli *Client) error {
 	r.lazyInitHub()
-	return r.hub.UnRegClient(user)
+	return r.hub.RegClient(cli)
+}
+
+func (r *Room) UnregisterClient(cli *Client) error {
+	r.lazyInitHub()
+	return r.hub.UnRegClient(cli)
 }
 
 func (r *Room) SetStatus(playing bool, seek float64, rate float64, timeDiff float64) Status {
@@ -225,10 +235,6 @@ func (r *Room) SetRoomStatus(status model.RoomStatus) error {
 		return err
 	}
 	r.Status = status
-	switch status {
-	case model.RoomStatusBanned, model.RoomStatusPending:
-		return CompareAndCloseRoom(r)
-	}
 	return nil
 }
 

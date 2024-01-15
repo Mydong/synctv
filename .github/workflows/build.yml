@@ -20,7 +20,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
 
@@ -29,10 +29,10 @@ jobs:
 
       - name: Build
         run: |
-          bash build.sh -v dev -P -p "windows,linux,darwin"
+          bash script/build.sh -s -p "windows,linux,darwin"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: synctv
           path: build

@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
@@ -14,9 +15,16 @@ type GithubProvider struct {
 	config oauth2.Config
 }
 
+func newGithubProvider() provider.ProviderInterface {
+	return &GithubProvider{
+		config: oauth2.Config{
+			Scopes:   []string{"user"},
+			Endpoint: github.Endpoint,
+		},
+	}
+}
+
 func (p *GithubProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"user"}
-	p.config.Endpoint = github.Endpoint
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -56,15 +64,15 @@ func (p *GithubProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 	}
 	return &provider.UserInfo{
 		Username:       ui.Login,
-		ProviderUserID: ui.ID,
+		ProviderUserID: strconv.FormatUint(ui.ID, 10),
 	}, nil
 }
 
 type githubUserInfo struct {
 	Login string `json:"login"`
-	ID    uint   `json:"id"`
+	ID    uint64 `json:"id"`
 }
 
 func init() {
-	RegisterProvider(new(GithubProvider))
+	RegisterProvider(newGithubProvider())
 }

@@ -40,7 +40,7 @@ func init() {
 		home = "~"
 	}
 	RootCmd.PersistentFlags().StringVar(&flags.DataDir, "data-dir", filepath.Join(home, ".synctv"), "data dir")
-	RootCmd.PersistentFlags().StringVarP(&flags.ConfigFile, "config", "f", "", "config file path")
+	RootCmd.PersistentFlags().BoolVar(&flags.ForceAutoMigrate, "force-auto-migrate", version.Version == "dev", "force auto migrate")
 }
 
 func init() {

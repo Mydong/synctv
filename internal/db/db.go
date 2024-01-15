@@ -1,7 +1,9 @@
 package db
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
@@ -19,19 +21,21 @@ var (
 func Init(d *gorm.DB, t conf.DatabaseType) error {
 	db = d
 	dbType = t
-	return AutoMigrate(new(model.Movie), new(model.Room), new(model.User), new(model.RoomUserRelation), new(model.UserProvider), new(model.Setting), new(model.StreamingVendorInfo))
+	err := UpgradeDatabase()
+	if err != nil {
+		return err
+	}
+	return initRootUser()
 }
 
-func AutoMigrate(dst ...any) error {
-	var err error
-	switch conf.Conf.Database.Type {
-	case conf.DatabaseTypeMysql:
-		err = db.Set("gorm:table_options", "ENGINE=InnoDB CHARSET=utf8mb4").AutoMigrate(dst...)
-	case conf.DatabaseTypeSqlite3, conf.DatabaseTypePostgres:
-		err = db.AutoMigrate(dst...)
-	default:
-		log.Fatalf("unknown database type: %s", conf.Conf.Database.Type)
+func initRootUser() error {
+	user := model.User{}
+	err := db.Where("role = ?", model.RoleRoot).First(&user).Error
+	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
 	}
+	u, err := CreateUser("root", "root", WithRole(model.RoleRoot))
+	log.Infof("init root user:\nid: %s\nusername: %s\npassword: %s", u.ID, u.Username, "root")
 	return err
 }
 
@@ -99,19 +103,23 @@ func WithUser(db *gorm.DB) *gorm.DB {
 	return db.Preload("User")
 }
 
-func WithUserAndProvider(db *gorm.DB) *gorm.DB {
-	return db.Preload("User").Preload("User.Provider")
-}
-
 func WhereRoomID(roomID string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("room_id = ?", roomID)
 	}
 }
 
-func PreloadRoomUserRelation(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
+func PreloadRoomUserRelations(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Preload("RoomUserRelations", func(db *gorm.DB) *gorm.DB {
+			return db.Scopes(scopes...)
+		})
+	}
+}
+
+func PreloadUserProviders(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Preload("UserProviders", func(db *gorm.DB) *gorm.DB {
 			return db.Scopes(scopes...)
 		})
 	}
@@ -260,4 +268,30 @@ func WhereRoomUserStatus(status model.RoomUserStatus) func(db *gorm.DB) *gorm.DB
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("status = ?", status)
 	}
+}
+
+type ErrNotFound string
+
+func (e ErrNotFound) Error() string {
+	return fmt.Sprintf("%s not found", string(e))
+}
+
+func HandleNotFound(err error, errMsg ...string) error {
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrNotFound(strings.Join(errMsg, " "))
+	}
+	return err
+}
+
+func Transactional(txFunc func(*gorm.DB) error) (err error) {
+	tx := db.Begin()
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}()
+	err = txFunc(tx)
+	return
 }

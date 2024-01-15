@@ -1,19 +1,30 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"reflect"
+	"slices"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/maruel/natural"
+	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
+	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/synctv/utils"
+	"golang.org/x/exp/maps"
+	"google.golang.org/grpc/connectivity"
 	"gorm.io/gorm"
 )
 
 func EditAdminSettings(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	req := model.AdminSettingsReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -33,35 +44,67 @@ func EditAdminSettings(ctx *gin.Context) {
 }
 
 func AdminSettings(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 	group := ctx.Param("group")
-	if group == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group is required"))
-		return
+	switch group {
+	case "oauth2":
+		resp := make(model.AdminSettingsResp, len(bootstrap.ProviderGroupSettings))
+		for k, v := range bootstrap.ProviderGroupSettings {
+			reflectV := reflect.ValueOf(*v)
+			for i := 0; i < reflectV.NumField(); i++ {
+				f := reflectV.Field(i)
+				if resp[k] == nil {
+					resp[k] = make(gin.H, 0)
+				}
+				s, ok := f.Interface().(settings.Setting)
+				if !ok {
+					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("type error"))
+					return
+				}
+				resp[k][s.Name()] = s.Interface()
+			}
+		}
+
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	case "":
+		resp := make(model.AdminSettingsResp, len(settings.GroupSettings))
+		for sg, v := range settings.GroupSettings {
+			if resp[sg] == nil {
+				resp[sg] = make(gin.H, len(v))
+			}
+			for _, s2 := range v {
+				resp[sg][s2.Name()] = s2.Interface()
+			}
+		}
+
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	default:
+		s, ok := settings.GroupSettings[dbModel.SettingGroup(group)]
+		if !ok {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group not found"))
+			return
+		}
+		data := make(map[string]any, len(s))
+		for _, v := range s {
+			data[v.Name()] = v.Interface()
+		}
+
+		resp := model.AdminSettingsResp{dbModel.SettingGroup(group): data}
+
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	}
 
-	s, ok := settings.GroupSettings[dbModel.SettingGroup(group)]
-	if !ok {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group not found"))
-		return
-	}
-	resp := make(gin.H, len(s))
-	for _, v := range s {
-		resp[v.Name()] = v.Interface()
-	}
-
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 }
 
 func Users(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	// user := ctx.MustGet("user").(*op.UserEntry)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
 
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
@@ -78,7 +121,7 @@ func Users(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereRole(dbModel.RoleRoot))
 	}
 
-	switch ctx.DefaultQuery("order", "name") {
+	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -92,7 +135,7 @@ func Users(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByAsc("username"))
 		}
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
 
@@ -134,19 +177,19 @@ func GetRoomUsers(ctx *gin.Context) {
 		return
 	}
 
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
 
 	scopes := []func(db *gorm.DB) *gorm.DB{
-		db.PreloadRoomUserRelation(db.WhereRoomID(id)),
+		db.PreloadRoomUserRelations(db.WhereRoomID(id)),
 	}
 
-	switch ctx.DefaultQuery("order", "name") {
+	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -160,7 +203,7 @@ func GetRoomUsers(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByAsc("username"))
 		}
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
 
@@ -226,30 +269,30 @@ func ApprovePendingUser(ctx *gin.Context) {
 }
 
 func BanUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	u, err := db.GetUserByID(req.ID)
+	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if u.IsRoot() {
+	if u.Value().IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban root"))
 		return
 	}
 
-	if u.IsAdmin() && !user.IsRoot() {
+	if u.Value().IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban admin"))
 		return
 	}
 
-	err = op.SetRoleByID(req.ID, dbModel.RoleBanned)
+	err = u.Value().SetRole(dbModel.RoleBanned)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -259,25 +302,25 @@ func BanUser(ctx *gin.Context) {
 }
 
 func UnBanUser(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	u, err := db.GetUserByID(req.ID)
+	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if !u.IsBanned() {
+	if !u.Value().IsBanned() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user is not banned"))
 		return
 	}
 
-	err = op.SetRoleByID(req.ID, dbModel.RoleUser)
+	err = u.Value().SetRole(dbModel.RoleUser)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -287,15 +330,15 @@ func UnBanUser(ctx *gin.Context) {
 }
 
 func Rooms(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
 
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
@@ -308,7 +351,7 @@ func Rooms(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
 	}
 
-	switch ctx.DefaultQuery("order", "name") {
+	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -322,7 +365,7 @@ func Rooms(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByAsc("name"))
 		}
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
 
@@ -354,19 +397,28 @@ func GetUserRooms(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user id error"))
 		return
 	}
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
 
 	scopes := []func(db *gorm.DB) *gorm.DB{
 		db.WhereCreatorID(id),
 	}
 
-	switch ctx.DefaultQuery("order", "name") {
+	switch ctx.Query("status") {
+	case "active":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusActive))
+	case "pending":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusPending))
+	case "banned":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
+	}
+
+	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -380,7 +432,7 @@ func GetUserRooms(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByAsc("name"))
 		}
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
 
@@ -430,7 +482,7 @@ func ApprovePendingRoom(ctx *gin.Context) {
 }
 
 func BanRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -449,12 +501,17 @@ func BanRoom(ctx *gin.Context) {
 		return
 	}
 
+	if creator.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban root"))
+		return
+	}
+
 	if creator.IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot ban admin"))
 		return
 	}
 
-	err = op.SetRoomStatus(req.Id, dbModel.RoomStatusBanned)
+	err = op.SetRoomStatusByID(req.Id, dbModel.RoomStatusBanned)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -464,7 +521,7 @@ func BanRoom(ctx *gin.Context) {
 }
 
 func UnBanRoom(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -482,9 +539,327 @@ func UnBanRoom(ctx *gin.Context) {
 		return
 	}
 
-	err = op.SetRoomStatus(req.Id, dbModel.RoomStatusActive)
+	err = op.SetRoomStatusByID(req.Id, dbModel.RoomStatusActive)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AddUser(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+
+	req := model.AddUserReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if req.Role == dbModel.RoleRoot && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("you cannot add root user"))
+		return
+	}
+
+	_, err := op.CreateUser(req.Username, req.Password, db.WithRole(req.Role))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func DeleteUser(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+
+	req := model.UserIDReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	u, err := op.LoadOrInitUserByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if u.Value().IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot delete root"))
+		return
+	}
+
+	if u.Value().IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot delete admin"))
+		return
+	}
+
+	if err := op.DeleteUserByID(req.ID); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminUserPassword(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+
+	req := model.AdminUserPasswordReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	u, err := op.LoadOrInitUserByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user not found"))
+		return
+	}
+
+	if u.Value().IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root password"))
+		return
+	}
+
+	if u.Value().IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin password"))
+		return
+	}
+
+	if err := u.Value().SetPassword(req.Password); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminUsername(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+
+	req := model.AdminUsernameReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	u, err := op.LoadOrInitUserByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user not found"))
+		return
+	}
+
+	if u.Value().IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root username"))
+		return
+	}
+
+	if u.Value().IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin username"))
+		return
+	}
+
+	if err := u.Value().SetUsername(req.Username); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminRoomPassword(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+
+	req := model.AdminRoomPasswordReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	r, err := op.LoadOrInitRoomByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room not found"))
+		return
+	}
+
+	creator, err := op.LoadOrInitUserByID(r.Value().CreatorID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room creator not found"))
+		return
+	}
+
+	if creator.Value().IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root room password"))
+		return
+	}
+
+	if creator.Value().IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin room password"))
+		return
+	}
+
+	if err := r.Value().SetPassword(req.Password); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminGetVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.UserEntry)
+
+	conns := vendor.LoadConns()
+	page, size, err := utils.GetPageAndMax(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+	s := maps.Keys(conns)
+	l := len(s)
+	var resp []*model.GetVendorBackendResp
+	if (page-1)*size <= l {
+		slices.SortStableFunc(s, func(a, b string) int {
+			if a == b {
+				return 0
+			}
+			if natural.Less(a, b) {
+				return -1
+			} else {
+				return 1
+			}
+		})
+
+		if l > size {
+			l = size
+		}
+		resp = make([]*model.GetVendorBackendResp, 0, l)
+		for _, v := range s[(page-1)*size : (page-1)*size+l] {
+			resp = append(resp, &model.GetVendorBackendResp{
+				Info:   conns[v].Info,
+				Status: conns[v].Conn.GetState(),
+			})
+		}
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"total": l,
+		"list":  resp,
+	}))
+}
+
+func AdminAddVendorBackend(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.UserEntry)
+
+	var req model.AddVendorBackendReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := vendor.AddVendorBackend(ctx, (*dbModel.VendorBackend)(&req)); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminDeleteVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.UserEntry)
+
+	var req model.VendorBackendEndpointsReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := vendor.DeleteVendorBackends(ctx, req.Endpoints); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminUpdateVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.UserEntry)
+
+	var req model.AddVendorBackendReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := vendor.UpdateVendorBackend(ctx, (*dbModel.VendorBackend)(&req)); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminReconnectVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.UserEntry)
+
+	var req model.VendorBackendEndpointsReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	conns := vendor.LoadConns()
+	for _, v := range req.Endpoints {
+		if c, ok := conns[v]; ok {
+			if s := c.Conn.GetState(); s != connectivity.Ready {
+				c.Conn.Connect()
+				c.Conn.ResetConnectBackoff()
+				if len(req.Endpoints) == 1 {
+					ctx2, cf := context.WithTimeout(ctx, time.Second*5)
+					defer cf()
+					c.Conn.WaitForStateChange(ctx2, s)
+				}
+			}
+		} else {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("endpoint %s not found", v)))
+			return
+		}
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminEnableVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.UserEntry)
+
+	var req model.VendorBackendEndpointsReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := vendor.EnableVendorBackends(ctx, req.Endpoints); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminDisableVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.UserEntry)
+
+	var req model.VendorBackendEndpointsReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := vendor.DisableVendorBackends(ctx, req.Endpoints); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 

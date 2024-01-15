@@ -1,26 +1,21 @@
 package model
 
 import (
-	"errors"
 	"fmt"
-	"net/url"
-	"sync/atomic"
+	"strings"
 	"time"
 
-	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/refreshcache"
-	"github.com/zijiren233/gencontainer/rwmap"
 	"gorm.io/gorm"
 )
 
 type Movie struct {
-	ID        string    `gorm:"primaryKey;type:varchar(32)" json:"id"`
+	ID        string    `gorm:"primaryKey;type:char(32)" json:"id"`
 	CreatedAt time.Time `json:"-"`
 	UpdatedAt time.Time `json:"-"`
 	Position  uint      `gorm:"not null" json:"-"`
-	RoomID    string    `gorm:"not null;index" json:"-"`
-	CreatorID string    `gorm:"not null;index" json:"creatorId"`
+	RoomID    string    `gorm:"not null;index;type:char(32)" json:"-"`
+	CreatorID string    `gorm:"index;type:char(32)" json:"creatorId"`
 	Base      BaseMovie `gorm:"embedded;embeddedPrefix:base_" json:"base"`
 }
 
@@ -31,176 +26,127 @@ func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-func (m *Movie) Validate() error {
-	return m.Base.Validate()
-}
-
 type BaseMovie struct {
-	Url        string            `json:"url"`
-	Name       string            `gorm:"not null" json:"name"`
-	Live       bool              `json:"live"`
-	Proxy      bool              `json:"proxy"`
-	RtmpSource bool              `json:"rtmpSource"`
-	Type       string            `json:"type"`
-	Headers    map[string]string `gorm:"serializer:fastjson" json:"headers"`
-	VendorInfo VendorInfo        `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
+	Url        string               `gorm:"type:varchar(8192)" json:"url"`
+	Name       string               `gorm:"not null;type:varchar(128)" json:"name"`
+	Live       bool                 `json:"live"`
+	Proxy      bool                 `json:"proxy"`
+	RtmpSource bool                 `json:"rtmpSource"`
+	Type       string               `json:"type"`
+	Headers    map[string]string    `gorm:"serializer:fastjson;type:text" json:"headers"`
+	Subtitles  map[string]*Subtitle `gorm:"serializer:fastjson;type:text" json:"subtitles"`
+	VendorInfo VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
 }
 
-func (m *BaseMovie) Validate() error {
-	if m.VendorInfo.Vendor != "" {
-		err := m.validateVendorMovie()
-		if err != nil {
-			return err
-		}
-	}
-	switch {
-	case m.RtmpSource && m.Proxy:
-		return errors.New("rtmp source and proxy can't be true at the same time")
-	case m.Live && m.RtmpSource:
-		if !conf.Conf.Server.Rtmp.Enable {
-			return errors.New("rtmp is not enabled")
-		}
-	case m.Live && m.Proxy:
-		if !conf.Conf.Proxy.LiveProxy {
-			return errors.New("live proxy is not enabled")
-		}
-		u, err := url.Parse(m.Url)
-		if err != nil {
-			return err
-		}
-		if !conf.Conf.Proxy.AllowProxyToLocal && utils.IsLocalIP(u.Host) {
-			return errors.New("local ip is not allowed")
-		}
-		switch u.Scheme {
-		case "rtmp":
-		case "http", "https":
-		default:
-			return errors.New("unsupported scheme")
-		}
-	case !m.Live && m.RtmpSource:
-		return errors.New("rtmp source can't be true when movie is not live")
-	case !m.Live && m.Proxy:
-		if !conf.Conf.Proxy.MovieProxy {
-			return errors.New("movie proxy is not enabled")
-		}
-		if m.VendorInfo.Vendor != "" {
-			return nil
-		}
-		u, err := url.Parse(m.Url)
-		if err != nil {
-			return err
-		}
-		if !conf.Conf.Proxy.AllowProxyToLocal && utils.IsLocalIP(u.Host) {
-			return errors.New("local ip is not allowed")
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return errors.New("unsupported scheme")
-		}
-	case !m.Live && !m.Proxy, m.Live && !m.Proxy && !m.RtmpSource:
-		if m.VendorInfo.Vendor == "" {
-			u, err := url.Parse(m.Url)
-			if err != nil {
-				return err
-			}
-			if u.Scheme != "http" && u.Scheme != "https" {
-				return errors.New("unsupported scheme")
-			}
-		}
-	default:
-		return errors.New("unknown error")
-	}
-	return nil
+type Subtitle struct {
+	URL  string `json:"url"`
+	Type string `json:"type"`
 }
 
-func (m *BaseMovie) validateVendorMovie() error {
-	switch m.VendorInfo.Vendor {
-	case StreamingVendorBilibili:
-		err := m.VendorInfo.Bilibili.Validate()
-		if err != nil {
-			return err
-		}
-		if m.Headers == nil {
-			m.Headers = map[string]string{
-				"Referer":    "https://www.bilibili.com",
-				"User-Agent": utils.UA,
-			}
-		} else {
-			m.Headers["Referer"] = "https://www.bilibili.com"
-			m.Headers["User-Agent"] = utils.UA
-		}
-	default:
-		return fmt.Errorf("vendor not support")
-	}
+type VendorName = string
 
-	return nil
-}
+const (
+	VendorBilibili VendorName = "bilibili"
+	VendorAlist    VendorName = "alist"
+	VendorEmby     VendorName = "emby"
+)
 
 type VendorInfo struct {
-	Vendor   StreamingVendor     `json:"vendor"`
-	Shared   bool                `gorm:"not null;default:false" json:"shared"`
-	Bilibili *BilibiliVendorInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
+	Vendor   VendorName             `gorm:"type:varchar(32)" json:"vendor"`
+	Backend  string                 `gorm:"type:varchar(64)" json:"backend"`
+	Bilibili *BilibiliStreamingInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
+	Alist    *AlistStreamingInfo    `gorm:"embedded;embeddedPrefix:alist_" json:"alist,omitempty"`
+	Emby     *EmbyStreamingInfo     `gorm:"embedded;embeddedPrefix:emby_" json:"emby,omitempty"`
 }
 
-type BilibiliVendorInfo struct {
-	Bvid       string              `json:"bvid,omitempty"`
-	Cid        uint64              `json:"cid,omitempty"`
-	Epid       uint64              `json:"epid,omitempty"`
-	Quality    uint64              `json:"quality,omitempty"`
-	VendorName string              `json:"vendorName,omitempty"`
-	Cache      BilibiliVendorCache `gorm:"-:all" json:"-"`
+type BilibiliStreamingInfo struct {
+	Bvid    string `json:"bvid,omitempty"`
+	Cid     uint64 `json:"cid,omitempty"`
+	Epid    uint64 `json:"epid,omitempty"`
+	Quality uint64 `json:"quality,omitempty"`
+	Shared  bool   `json:"shared,omitempty"`
 }
 
-func (b *BilibiliVendorInfo) Validate() error {
-	if b.Bvid == "" && b.Epid == 0 {
-		return fmt.Errorf("bvid and epid are empty")
-	}
-
-	if b.Bvid != "" && b.Epid != 0 {
-		return fmt.Errorf("bvid and epid can't be set at the same time")
-	}
-
-	if b.Bvid != "" && b.Cid == 0 {
-		return fmt.Errorf("cid is empty")
+func (b *BilibiliStreamingInfo) Validate() error {
+	switch {
+	// 先判断epid是否为0来确定是否是pgc
+	case b.Epid != 0:
+		if b.Bvid == "" || b.Cid == 0 {
+			return fmt.Errorf("bvid or cid is empty")
+		}
+	case b.Bvid != "":
+		if b.Cid == 0 {
+			return fmt.Errorf("cid is empty")
+		}
+	default:
+		return fmt.Errorf("bvid or epid is empty")
 	}
 
 	return nil
 }
 
-type BilibiliVendorCache struct {
-	URL rwmap.RWMap[string, *refreshcache.RefreshCache[string]]
-	MPD atomic.Pointer[refreshcache.RefreshCache[*MPDCache]]
+type AlistStreamingInfo struct {
+	// {/}serverId/Path
+	Path     string `gorm:"type:varchar(4096)" json:"path,omitempty"`
+	Password string `gorm:"type:varchar(256)" json:"password,omitempty"`
 }
 
-type MPDCache struct {
-	MPDFile string
-	URLs    []string
+func GetAlistServerIdFromPath(path string) (serverID string, filePath string, err error) {
+	before, after, found := strings.Cut(strings.TrimLeft(path, "/"), "/")
+	if !found {
+		return "", path, fmt.Errorf("path is invalid")
+	}
+	return before, after, nil
 }
 
-func (b *BilibiliVendorInfo) InitOrLoadURLCache(id string, initCache func(*BilibiliVendorInfo) (*refreshcache.RefreshCache[string], error)) (*refreshcache.RefreshCache[string], error) {
-	if c, loaded := b.Cache.URL.Load(id); loaded {
-		return c, nil
+func (a *AlistStreamingInfo) Validate() error {
+	if a.Path == "" {
+		return fmt.Errorf("path is empty")
 	}
-	c, err := initCache(b)
-	if err != nil {
-		return nil, err
-	}
-
-	c, _ = b.Cache.URL.LoadOrStore(id, c)
-
-	return c, nil
+	return nil
 }
 
-func (b *BilibiliVendorInfo) InitOrLoadMPDCache(initCache func(*BilibiliVendorInfo) (*refreshcache.RefreshCache[*MPDCache], error)) (*refreshcache.RefreshCache[*MPDCache], error) {
-	if c := b.Cache.MPD.Load(); c != nil {
-		return c, nil
+func (a *AlistStreamingInfo) BeforeSave(tx *gorm.DB) error {
+	if a.Password != "" {
+		s, err := utils.CryptoToBase64([]byte(a.Password), utils.GenCryptoKey(a.Path))
+		if err != nil {
+			return err
+		}
+		a.Password = s
 	}
-	c, err := initCache(b)
-	if err != nil {
-		return nil, err
+	return nil
+}
+
+func (a *AlistStreamingInfo) AfterSave(tx *gorm.DB) error {
+	if a.Password != "" {
+		b, err := utils.DecryptoFromBase64(a.Password, utils.GenCryptoKey(a.Path))
+		if err != nil {
+			return err
+		}
+		a.Password = string(b)
 	}
-	if b.Cache.MPD.CompareAndSwap(nil, c) {
-		return c, nil
-	} else {
-		return b.InitOrLoadMPDCache(initCache)
+	return nil
+}
+
+func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
+	return a.AfterSave(tx)
+}
+
+type EmbyStreamingInfo struct {
+	// {/}serverId/ItemId
+	Path string `gorm:"type:varchar(52)" json:"path,omitempty"`
+}
+
+func GetEmbyServerIdFromPath(path string) (serverID string, filePath string, err error) {
+	if s := strings.Split(strings.TrimLeft(path, "/"), "/"); len(s) == 2 {
+		return s[0], s[1], nil
 	}
+	return "", path, fmt.Errorf("path is invalid")
+}
+
+func (e *EmbyStreamingInfo) Validate() error {
+	if e.Path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	return nil
 }

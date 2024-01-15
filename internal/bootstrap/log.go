@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"time"
 
 	"github.com/natefinch/lumberjack"
 	"github.com/sirupsen/logrus"
@@ -24,10 +25,14 @@ func setLog(l *logrus.Logger) {
 	}
 }
 
-func InitLog(ctx context.Context) error {
+func InitLog(ctx context.Context) (err error) {
 	setLog(logrus.StandardLogger())
+	forceColor := utils.ForceColor()
 	if conf.Conf.Log.Enable {
-		utils.OptFilePath(&conf.Conf.Log.FilePath)
+		conf.Conf.Log.FilePath, err = utils.OptFilePath(conf.Conf.Log.FilePath)
+		if err != nil {
+			logrus.Fatalf("log: log file path error: %v", err)
+		}
 		var l = &lumberjack.Logger{
 			Filename:   conf.Conf.Log.FilePath,
 			MaxSize:    conf.Conf.Log.MaxSize,
@@ -38,7 +43,12 @@ func InitLog(ctx context.Context) error {
 		if err := l.Rotate(); err != nil {
 			logrus.Fatalf("log: rotate log file error: %v", err)
 		}
-		var w io.Writer = colorable.NewNonColorableWriter(l)
+		var w io.Writer
+		if forceColor {
+			w = colorable.NewNonColorableWriter(l)
+		} else {
+			w = l
+		}
 		if flags.Dev || flags.LogStd {
 			logrus.SetOutput(io.MultiWriter(os.Stdout, w))
 			logrus.Infof("log: enable log to stdout and file: %s", conf.Conf.Log.FilePath)
@@ -49,18 +59,23 @@ func InitLog(ctx context.Context) error {
 	}
 	switch conf.Conf.Log.LogFormat {
 	case "json":
-		logrus.SetFormatter(&logrus.JSONFormatter{})
+		logrus.SetFormatter(&logrus.JSONFormatter{
+			TimestampFormat: time.DateTime,
+		})
 	default:
 		if conf.Conf.Log.LogFormat != "text" {
 			logrus.Warnf("unknown log format: %s, use default: text", conf.Conf.Log.LogFormat)
 		}
-		if colorable.IsTerminal(os.Stdout.Fd()) {
-			logrus.SetFormatter(&logrus.TextFormatter{
-				ForceColors: true,
-			})
-		} else {
-			logrus.SetFormatter(&logrus.TextFormatter{})
-		}
+		logrus.SetFormatter(&logrus.TextFormatter{
+			ForceColors:      forceColor,
+			DisableColors:    !forceColor,
+			ForceQuote:       flags.Dev,
+			DisableQuote:     !flags.Dev,
+			DisableSorting:   true,
+			FullTimestamp:    true,
+			TimestampFormat:  time.DateTime,
+			QuoteEmptyFields: true,
+		})
 	}
 	log.SetOutput(logrus.StandardLogger().Writer())
 	return nil

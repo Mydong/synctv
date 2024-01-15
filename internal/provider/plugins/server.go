@@ -15,11 +15,12 @@ type GRPCServer struct {
 }
 
 func (s *GRPCServer) Init(ctx context.Context, req *providerpb.InitReq) (*providerpb.Enpty, error) {
-	s.Impl.Init(provider.Oauth2Option{
+	opt := provider.Oauth2Option{
 		ClientID:     req.ClientId,
 		ClientSecret: req.ClientSecret,
 		RedirectURL:  req.RedirectUrl,
-	})
+	}
+	s.Impl.Init(opt)
 	return &providerpb.Enpty{}, nil
 }
 
@@ -56,7 +57,7 @@ func (s *GRPCServer) GetUserInfo(ctx context.Context, req *providerpb.GetUserInf
 	}
 	resp := &providerpb.GetUserInfoResp{
 		Username:       userInfo.Username,
-		ProviderUserId: uint64(userInfo.ProviderUserID),
+		ProviderUserId: userInfo.ProviderUserID,
 	}
 	return resp, nil
 }

@@ -23,59 +23,56 @@ func (m *movies) init() {
 	m.once.Do(func() {
 		for _, m2 := range db.GetAllMoviesByRoomID(m.roomID) {
 			m.list.PushBack(&Movie{
-				Movie: m2,
+				Movie: *m2,
 			})
 		}
 	})
 }
 
 func (m *movies) Len() int {
+	m.init()
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	m.init()
 	return m.list.Len()
 }
 
 func (m *movies) AddMovie(mo *model.Movie) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 	mo.Position = uint(time.Now().UnixMilli())
 	movie := &Movie{
-		Movie: mo,
+		Movie: *mo,
 	}
 
-	err := movie.init()
+	err := movie.Validate()
 	if err != nil {
 		return err
 	}
 
 	err = db.CreateMovie(mo)
 	if err != nil {
-		movie.terminate()
 		return err
 	}
 
+	movie.Movie.ID = mo.ID
 	m.list.PushBack(movie)
 	return nil
 }
 
 func (m *movies) AddMovies(mos []*model.Movie) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 	inited := make([]*Movie, 0, len(mos))
 	for _, mo := range mos {
 		mo.Position = uint(time.Now().UnixMilli())
 		movie := &Movie{
-			Movie: mo,
+			Movie: *mo,
 		}
 
-		err := movie.init()
+		err := movie.Validate()
 		if err != nil {
-			for _, movie := range inited {
-				movie.terminate()
-			}
 			return err
 		}
 
@@ -84,13 +81,11 @@ func (m *movies) AddMovies(mos []*model.Movie) error {
 
 	err := db.CreateMovies(mos)
 	if err != nil {
-		for _, movie := range inited {
-			movie.terminate()
-		}
 		return err
 	}
 
-	for _, mo := range inited {
+	for i, mo := range inited {
+		mo.Movie.ID = mos[i].ID
 		m.list.PushBack(mo)
 	}
 
@@ -101,28 +96,24 @@ func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
 	if id == "" {
 		return nil, errors.New("channel name is nil")
 	}
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	m.init()
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.ID == id {
-			return e.Value.Channel()
-		}
+	movie, err := m.GetMovieByID(id)
+	if err != nil {
+		return nil, err
 	}
-	return nil, errors.New("channel not found")
+	return movie.Channel()
 }
 
-func (m *movies) Update(movieId string, movie model.BaseMovie) error {
+func (m *movies) Update(movieId string, movie *model.BaseMovie) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.ID == movieId {
+		if e.Value.Movie.ID == movieId {
 			err := e.Value.Update(movie)
 			if err != nil {
 				return err
 			}
-			return db.SaveMovie(e.Value.Movie)
+			return db.SaveMovie(&e.Value.Movie)
 		}
 	}
 	return nil
@@ -153,9 +144,9 @@ func (m *movies) Close() error {
 }
 
 func (m *movies) DeleteMovieByID(id string) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 
 	err := db.DeleteMovieByID(m.roomID, id)
 	if err != nil {
@@ -163,7 +154,7 @@ func (m *movies) DeleteMovieByID(id string) error {
 	}
 
 	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.ID == id {
+		if e.Value.Movie.ID == id {
 			m.list.Remove(e).Terminate()
 			return nil
 		}
@@ -180,7 +171,7 @@ func (m *movies) GetMovieByID(id string) (*Movie, error) {
 func (m *movies) getMovieByID(id string) (*Movie, error) {
 	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.ID == id {
+		if e.Value.Movie.ID == id {
 			return e.Value, nil
 		}
 	}
@@ -190,7 +181,7 @@ func (m *movies) getMovieByID(id string) (*Movie, error) {
 func (m *movies) getMovieElementByID(id string) (*dllist.Element[*Movie], error) {
 	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.ID == id {
+		if e.Value.Movie.ID == id {
 			return e, nil
 		}
 	}
@@ -198,9 +189,9 @@ func (m *movies) getMovieElementByID(id string) (*dllist.Element[*Movie], error)
 }
 
 func (m *movies) SwapMoviePositions(id1, id2 string) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 
 	err := db.SwapMoviePositions(m.roomID, id1, id2)
 	if err != nil {
@@ -217,16 +208,16 @@ func (m *movies) SwapMoviePositions(id1, id2 string) error {
 		return err
 	}
 
-	movie1.Value.Position, movie2.Value.Position = movie2.Value.Position, movie1.Value.Position
+	movie1.Value.Movie.Position, movie2.Value.Movie.Position = movie2.Value.Movie.Position, movie1.Value.Movie.Position
 
 	m.list.Swap(movie1, movie2)
 	return nil
 }
 
 func (m *movies) GetMoviesWithPage(page, pageSize int) []*Movie {
+	m.init()
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	m.init()
 
 	start, end := utils.GetPageItemsRange(m.list.Len(), page, pageSize)
 	ms := make([]*Movie, 0, end-start)

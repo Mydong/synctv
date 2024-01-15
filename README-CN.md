@@ -44,11 +44,18 @@ SyncTV 的同步观看功能确保所有观看视频的人都在同一点上。�
   - [x] 聊天
   - [x] 弹幕
 - [x] 代理
-  - [ ] 视频代理
-  - [ ] 直播代理
+  - [x] 视频代理
+  - [x] 直播代理
+- [x] 解析
+  - [x] 视频解析
+    - [x] Alist
+    - [x] Bilibili
+    - [x] Emby
+  - [ ] 直播解析
+
 ---
 
-# Demo
+# 演示站点
 https://demo.synctv.wiki
 
 ---
@@ -60,7 +67,7 @@ https://demo.synctv.wiki
 您可以使用该脚本来安装和运行 SyncTV。
 
 ```bash
-sudo -v ; curl https://raw.githubusercontent.com/synctv-org/synctv/main/install.sh | sudo bash -s -- -v latest
+sudo -v ; curl -fsSL https://raw.gitmirror.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
 ```
 
 ## Docker
@@ -81,10 +88,15 @@ synctv server
 synctv server --data-dir ./
 ```
 
+> 每次启动会检测是否有root权限的用户，如果没有则会初始化一个`root`用户，密码为`root`，请及时修改用户名密码。
+> 
+> 用户注册功能需要启用任意 `OAuth2` 服务，如 `Google`、`Github` 等等，具体配置请参考[文档](https://synctv.wiki/#/zh-cn/oauth2)。
+
 # 文档
 https://synctv.wiki
 
----
+# 特别赞助商
+- [亚洲云](https://www.asiayun.com) 为演示站点提供服务器支持。
 
 # 贡献者
 感谢这些出色的人们：
@@ -97,3 +109,6 @@ https://synctv.wiki
 - 该程序仅进行客户端播放视频文件/流量转发，不会拦截、存储或篡改任何用户数据。
 - 在使用该程序之前，您应该了解并承担相应的风险，包括但不限于版权纠纷、法律限制等，这与该程序无关。
 - 如果有任何侵权行为，请通过[电子邮件](mailto:pyh1670605849@gmail.com)与我联系，将及时处理。
+
+# 讨论
+- [Telegram](https://t.me/synctv)

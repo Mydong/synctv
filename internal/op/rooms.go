@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"time"
 
@@ -9,61 +10,68 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/zijiren233/gencontainer/synccache"
-	"github.com/zijiren233/gencontainer/vec"
 )
 
 var roomCache *synccache.SyncCache[string, *Room]
 
-func CreateRoom(name, password string, maxCount int64, conf ...db.CreateRoomConfig) (*Room, error) {
+type RoomEntry = synccache.Entry[*Room]
+
+func RangeRoomCache(f func(key string, value *synccache.Entry[*Room]) bool) {
+	roomCache.Range(f)
+}
+
+func CreateRoom(name, password string, maxCount int64, conf ...db.CreateRoomConfig) (*RoomEntry, error) {
 	r, err := db.CreateRoom(name, password, maxCount, conf...)
 	if err != nil {
 		return nil, err
 	}
-	return InitRoom(r)
-}
-
-func InitRoom(room *model.Room) (*Room, error) {
-	r := &Room{
-		Room:    *room,
-		version: crc32.ChecksumIEEE(room.HashedPassword),
-		current: newCurrent(),
-		movies: movies{
-			roomID: room.ID,
-		},
-	}
-
-	i, loaded := roomCache.LoadOrStore(room.ID, r, time.Duration(settings.RoomTTL.Get()))
-	if loaded {
-		return r, errors.New("room already init")
-	}
-	return i.Value(), nil
+	return LoadOrInitRoom(r)
 }
 
 var (
-	ErrRoomPending = errors.New("room pending, please wait for admin to approve")
-	ErrRoomBanned  = errors.New("room banned")
+	ErrRoomPending          = errors.New("room pending, please wait for admin to approve")
+	ErrRoomBanned           = errors.New("room banned")
+	ErrRoomCreatorBanned    = errors.New("room creator banned")
+	ErrorRoomCreatorPending = errors.New("room creator pending, please wait for admin to approve")
 )
 
-func LoadOrInitRoom(room *model.Room) (*Room, error) {
+func checkRoomCreatorStatus(creatorID string) error {
+	e, err := LoadOrInitUserByID(creatorID)
+	if err != nil {
+		return fmt.Errorf("load room creator error: %w", err)
+	}
+
+	if e.Value().IsBanned() {
+		return ErrRoomCreatorBanned
+	}
+	if e.Value().IsPending() {
+		return ErrorRoomCreatorPending
+	}
+	return nil
+}
+
+func LoadOrInitRoom(room *model.Room) (*RoomEntry, error) {
 	switch room.Status {
 	case model.RoomStatusBanned:
 		return nil, ErrRoomBanned
 	case model.RoomStatusPending:
 		return nil, ErrRoomPending
 	}
-	t := time.Duration(settings.RoomTTL.Get())
-	i, loaded := roomCache.LoadOrStore(room.ID, &Room{
+
+	err := checkRoomCreatorStatus(room.CreatorID)
+	if err != nil {
+		return nil, err
+	}
+
+	i, _ := roomCache.LoadOrStore(room.ID, &Room{
 		Room:    *room,
 		version: crc32.ChecksumIEEE(room.HashedPassword),
 		current: newCurrent(),
 		movies: movies{
 			roomID: room.ID,
 		},
-	}, t)
-	if loaded {
-		i.SetExpiration(time.Now().Add(t))
-	}
-	return i.Value(), nil
+	}, time.Duration(settings.RoomTTL.Get())*time.Hour)
+	return i, nil
 }
 
 func DeleteRoomByID(roomID string) error {
@@ -71,18 +79,19 @@ func DeleteRoomByID(roomID string) error {
 	if err != nil {
 		return err
 	}
-	return CloseRoomByID(roomID)
+	return CloseRoomById(roomID)
 }
 
-func CompareAndDeleteRoom(room *Room) error {
-	err := CompareAndCloseRoom(room)
+func CompareAndDeleteRoom(room *RoomEntry) error {
+	err := db.DeleteRoomByID(room.Value().ID)
 	if err != nil {
 		return err
 	}
-	return db.DeleteRoomByID(room.ID)
+	CompareAndCloseRoom(room)
+	return nil
 }
 
-func CloseRoomByID(roomID string) error {
+func CloseRoomById(roomID string) error {
 	r, loaded := roomCache.LoadAndDelete(roomID)
 	if loaded {
 		r.Value().close()
@@ -90,36 +99,47 @@ func CloseRoomByID(roomID string) error {
 	return nil
 }
 
-func CompareAndCloseRoom(room *Room) error {
-	r, loaded := roomCache.Load(room.ID)
-	if loaded {
-		if r.Value() != room {
-			return nil
-		}
-		if roomCache.CompareAndDelete(room.ID, r) {
-			r.Value().close()
-		}
+func CompareAndCloseRoom(room *RoomEntry) bool {
+	if roomCache.CompareAndDelete(room.Value().ID, room) {
+		room.Value().close()
+		return true
 	}
-	return nil
+	return false
 }
 
-func LoadRoomByID(id string) (*Room, error) {
+func LoadRoomByID(id string) (*RoomEntry, error) {
 	r2, loaded := roomCache.Load(id)
-	if loaded {
-		r2.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get())))
-		return r2.Value(), nil
+	if !loaded {
+		return nil, errors.New("room not found")
 	}
-	return nil, errors.New("room not found")
+
+	err := checkRoomCreatorStatus(r2.Value().CreatorID)
+	if err != nil {
+		if errors.Is(err, ErrRoomCreatorBanned) || errors.Is(err, ErrorRoomCreatorPending) {
+			CompareAndCloseRoom(r2)
+		}
+		return nil, err
+	}
+
+	r2.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get()) * time.Hour))
+	return r2, nil
 }
 
-func LoadOrInitRoomByID(id string) (*Room, error) {
+func LoadOrInitRoomByID(id string) (*RoomEntry, error) {
 	if len(id) != 32 {
 		return nil, errors.New("room id is not 32 bit")
 	}
 	i, loaded := roomCache.Load(id)
 	if loaded {
-		i.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get())))
-		return i.Value(), nil
+		err := checkRoomCreatorStatus(i.Value().CreatorID)
+		if err != nil {
+			if errors.Is(err, ErrRoomCreatorBanned) || errors.Is(err, ErrorRoomCreatorPending) {
+				CompareAndCloseRoom(i)
+			}
+			return nil, err
+		}
+		i.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get()) * time.Hour))
+		return i, nil
 	}
 	room, err := db.GetRoomByID(id)
 	if err != nil {
@@ -128,108 +148,22 @@ func LoadOrInitRoomByID(id string) (*Room, error) {
 	return LoadOrInitRoom(room)
 }
 
-func ClientNum(roomID string) int64 {
+func PeopleNum(roomID string) int64 {
 	r, loaded := roomCache.Load(roomID)
 	if loaded {
-		return r.Value().ClientNum()
+		return r.Value().PeopleNum()
 	}
 	return 0
 }
 
-func HasRoom(roomID string) bool {
-	_, ok := roomCache.Load(roomID)
-	if ok {
-		return true
-	}
-	ok, err := db.HasRoom(roomID)
-	if err != nil {
-		return false
-	}
-	return ok
-}
-
-func HasRoomByName(name string) bool {
-	ok, err := db.HasRoomByName(name)
-	if err != nil {
-		return false
-	}
-	return ok
-}
-
-func SetRoomPassword(roomID, password string) error {
-	r, err := LoadOrInitRoomByID(roomID)
-	if err != nil {
-		return err
-	}
-	return r.SetPassword(password)
-}
-
-func GetAllRoomsInCacheWithNoNeedPassword() []*Room {
-	rooms := make([]*Room, 0)
-	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
-		v := value.Value()
-		if !v.NeedPassword() {
-			rooms = append(rooms, v)
-		}
-		return true
-	})
-	return rooms
-}
-
-func GetAllRoomsInCacheWithoutHidden() []*Room {
-	rooms := make([]*Room, 0)
-	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
-		v := value.Value()
-		if !v.Settings.Hidden {
-			rooms = append(rooms, v)
-		}
-		return true
-	})
-	return rooms
-}
-
-type RoomInfo struct {
-	RoomId       string           `json:"roomId"`
-	RoomName     string           `json:"roomName"`
-	PeopleNum    int64            `json:"peopleNum"`
-	NeedPassword bool             `json:"needPassword"`
-	CreatorID    string           `json:"creatorId"`
-	Creator      string           `json:"creator"`
-	CreatedAt    int64            `json:"createdAt"`
-	Status       model.RoomStatus `json:"status"`
-}
-
-func GetRoomHeapInCacheWithoutHidden() []*RoomInfo {
-	rooms := vec.New[*RoomInfo](vec.WithCmpLess[*RoomInfo](func(v1, v2 *RoomInfo) bool {
-		return v1.PeopleNum > v2.PeopleNum
-	}), vec.WithCmpEqual[*RoomInfo](func(v1, v2 *RoomInfo) bool {
-		return v1.RoomId == v2.RoomId
-	}))
-	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
-		v := value.Value()
-		if !v.Settings.Hidden {
-			rooms.Push(&RoomInfo{
-				RoomId:       v.ID,
-				RoomName:     v.Name,
-				PeopleNum:    v.ClientNum(),
-				NeedPassword: v.NeedPassword(),
-				Creator:      GetUserName(v.CreatorID),
-				CreatedAt:    v.CreatedAt.UnixMilli(),
-			})
-		}
-		return true
-	})
-	return rooms.SortStable().Slice()
-}
-
-func SetRoomStatus(roomID string, status model.RoomStatus) error {
+func SetRoomStatusByID(roomID string, status model.RoomStatus) error {
 	err := db.SetRoomStatus(roomID, status)
 	if err != nil {
 		return err
 	}
-	e, loaded := roomCache.LoadAndDelete(roomID)
-	if loaded {
-		e.Value().close()
+	switch status {
+	case model.RoomStatusBanned, model.RoomStatusPending:
+		roomCache.Delete(roomID)
 	}
 	return nil
 }

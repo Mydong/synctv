@@ -7,18 +7,19 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/public"
 	"github.com/synctv-org/synctv/server/middlewares"
 )
 
 func Init(e *gin.Engine) {
-	{
-		e.GET("/", func(ctx *gin.Context) {
-			ctx.Redirect(http.StatusMovedPermanently, "/web/")
-		})
+	e.GET("/", func(ctx *gin.Context) {
+		ctx.Redirect(http.StatusMovedPermanently, "/web/")
+	})
 
-		web := e.Group("/web")
+	web := e.Group("/web")
 
+	if flags.WebPath == "" {
 		web.Use(middlewares.NewDistCacheControl("/web/"))
 
 		err := initFSRouter(web, public.Public.(fs.ReadDirFS), ".")
@@ -32,7 +33,17 @@ func Init(e *gin.Engine) {
 				return
 			}
 		})
+	} else {
+		web.Static("/", flags.WebPath)
+
+		e.NoRoute(func(ctx *gin.Context) {
+			if strings.HasPrefix(ctx.Request.URL.Path, "/web/") {
+				ctx.FileFromFS("", http.Dir(flags.WebPath))
+				return
+			}
+		})
 	}
+
 }
 
 func initFSRouter(e *gin.RouterGroup, f fs.ReadDirFS, path string) error {

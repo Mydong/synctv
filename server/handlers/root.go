@@ -10,7 +10,7 @@ import (
 )
 
 func AddAdmin(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.IdReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -22,17 +22,17 @@ func AddAdmin(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot add yourself"))
 		return
 	}
-	u, err := op.GetUserById(req.Id)
+	u, err := op.LoadOrInitUserByID(req.Id)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("user not found"))
 		return
 	}
-	if u.IsAdmin() {
+	if u.Value().IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user is already admin"))
 		return
 	}
 
-	if err := u.SetRole(dbModel.RoleAdmin); err != nil {
+	if err := u.Value().SetRole(dbModel.RoleAdmin); err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
@@ -41,7 +41,7 @@ func AddAdmin(ctx *gin.Context) {
 }
 
 func DeleteAdmin(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry)
 
 	req := model.IdReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -49,21 +49,21 @@ func DeleteAdmin(ctx *gin.Context) {
 		return
 	}
 
-	if req.Id == user.ID {
+	if req.Id == user.Value().ID {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot remove yourself"))
 		return
 	}
-	u, err := op.GetUserById(req.Id)
+	u, err := op.LoadOrInitUserByID(req.Id)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("user not found"))
 		return
 	}
-	if u.IsRoot() {
+	if u.Value().IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot remove root"))
 		return
 	}
 
-	if err := u.SetRole(dbModel.RoleUser); err != nil {
+	if err := u.Value().SetRole(dbModel.RoleUser); err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}

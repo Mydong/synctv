@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -14,8 +15,10 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/zijiren233/go-colorable"
 	"github.com/zijiren233/stream"
 	yamlcomment "github.com/zijiren233/yaml-comment"
 	"gopkg.in/yaml.v3"
@@ -92,12 +95,8 @@ func In[T comparable](items []T, item T) bool {
 }
 
 func Exists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
+	_, err := os.Stat(name)
+	return !os.IsNotExist(err)
 }
 
 func WriteYaml(file string, module any) error {
@@ -132,13 +131,18 @@ func CompVersion(v1, v2 string) (int, error) {
 	if v1 == v2 {
 		return VersionEqual, nil
 	}
-	v1s, err := SplitVersion(strings.TrimLeft(v1, "v"))
+	sub1 := strings.Split(v1, "-")
+	sub2 := strings.Split(v2, "-")
+	v1s, err := SplitVersion(strings.TrimLeft(sub1[0], "v"))
 	if err != nil {
 		return VersionEqual, err
 	}
-	v2s, err := SplitVersion(strings.TrimLeft(v2, "v"))
+	v2s, err := SplitVersion(strings.TrimLeft(sub2[0], "v"))
 	if err != nil {
 		return VersionEqual, err
+	}
+	if len(v1s) != len(v2s) {
+		return VersionEqual, fmt.Errorf("invalid version: %s, %s", v1, v2)
 	}
 	for i := 0; i < len(v1s) && i < len(v2s); i++ {
 		if v1s[i] > v2s[i] {
@@ -147,12 +151,46 @@ func CompVersion(v1, v2 string) (int, error) {
 			return VersionLess, nil
 		}
 	}
-	if len(v1s) > len(v2s) {
+	sub1 = sub1[1:]
+	sub2 = sub2[1:]
+	if len(sub1) == 0 && len(sub2) != 0 {
 		return VersionGreater, nil
-	} else if len(v1s) < len(v2s) {
+	} else if len(sub1) != 0 && len(sub2) == 0 {
 		return VersionLess, nil
 	}
-	return VersionGreater, nil
+	switch {
+	case strings.HasPrefix(sub1[0], "beta"):
+		switch {
+		case strings.HasPrefix(sub2[0], "beta"):
+			return CompVersion(sub1[0], sub2[0])
+		case strings.HasPrefix(sub2[0], "alpha"):
+			return VersionGreater, nil
+		case strings.HasPrefix(sub2[0], "rc"):
+			return VersionGreater, nil
+		}
+	case strings.HasPrefix(sub1[0], "alpha"):
+		switch {
+		case strings.HasPrefix(sub2[0], "beta"):
+			return VersionLess, nil
+		case strings.HasPrefix(sub2[0], "alpha"):
+			return CompVersion(sub1[0], sub2[0])
+		case strings.HasPrefix(sub2[0], "rc"):
+			return VersionGreater, nil
+		}
+	case strings.HasPrefix(sub1[0], "rc"):
+		switch {
+		case strings.HasPrefix(sub2[0], "beta"):
+			return VersionLess, nil
+		case strings.HasPrefix(sub2[0], "alpha"):
+			return VersionLess, nil
+		case strings.HasPrefix(sub2[0], "rc"):
+			return CompVersion(sub1[0], sub2[0])
+		}
+	}
+	if len(sub1) == 2 && len(sub2) == 2 {
+		return CompVersion(sub1[1], sub2[1])
+	}
+	return VersionEqual, fmt.Errorf("invalid version: %s, %s", v1, v2)
 }
 
 func SplitVersion(v string) ([]int, error) {
@@ -260,13 +298,11 @@ func getLocalIPs() []net.IP {
 	return localIPs
 }
 
-func OptFilePath(filePath *string) {
-	if filePath == nil || *filePath == "" {
-		return
+func OptFilePath(filePath string) (string, error) {
+	if !filepath.IsAbs(filePath) {
+		return filepath.Abs(filepath.Join(flags.DataDir, filePath))
 	}
-	if !filepath.IsAbs(*filePath) {
-		*filePath = filepath.Join(flags.DataDir, *filePath)
-	}
+	return filePath, nil
 }
 
 func LIKE(s string) string {
@@ -274,14 +310,17 @@ func LIKE(s string) string {
 }
 
 func SortUUID() string {
-	src := uuid.New()
+	return SortUUIDWithUUID(uuid.New())
+}
+
+func SortUUIDWithUUID(src uuid.UUID) string {
 	dst := make([]byte, 32)
 	hex.Encode(dst, src[:])
 	return stream.BytesToString(dst)
 }
 
 func HttpCookieToMap(c []*http.Cookie) map[string]string {
-	m := make(map[string]string)
+	m := make(map[string]string, len(c))
 	for _, v := range c {
 		m[v.Name] = v.Value
 	}
@@ -297,4 +336,51 @@ func MapToHttpCookie(m map[string]string) []*http.Cookie {
 		})
 	}
 	return c
+}
+
+func GetUrlExtension(u string) string {
+	if u == "" {
+		return ""
+	}
+	p, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimLeft(filepath.Ext(p.Path), ".")
+}
+
+var (
+	needColor     bool
+	needColorOnce sync.Once
+)
+
+func ForceColor() bool {
+	needColorOnce.Do(func() {
+		if flags.DisableLogColor {
+			needColor = false
+			return
+		}
+		needColor = colorable.IsTerminal(os.Stdout.Fd())
+	})
+	return needColor
+}
+
+func GetPageAndMax(ctx *gin.Context) (page int, max int, err error) {
+	max, err = strconv.Atoi(ctx.DefaultQuery("max", "10"))
+	if err != nil {
+		return 0, 0, errors.New("max must be a number")
+	}
+	page, err = strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	if err != nil {
+		return 0, 0, errors.New("page must be a number")
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if max <= 0 {
+		max = 10
+	} else if max > 100 {
+		max = 100
+	}
+	return
 }

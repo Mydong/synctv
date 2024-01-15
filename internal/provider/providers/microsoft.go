@@ -2,12 +2,10 @@ package providers
 
 import (
 	"context"
-	"hash/crc32"
 	"net/http"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
-	"github.com/zijiren233/stream"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/microsoft"
 )
@@ -16,9 +14,16 @@ type MicrosoftProvider struct {
 	config oauth2.Config
 }
 
+func newMicrosoftProvider() provider.ProviderInterface {
+	return &MicrosoftProvider{
+		config: oauth2.Config{
+			Scopes:   []string{"user.read"},
+			Endpoint: microsoft.LiveConnectEndpoint,
+		},
+	}
+}
+
 func (p *MicrosoftProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"user.read"}
-	p.config.Endpoint = microsoft.LiveConnectEndpoint
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -58,7 +63,7 @@ func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (
 	}
 	return &provider.UserInfo{
 		Username:       ui.DisplayName,
-		ProviderUserID: uint(crc32.ChecksumIEEE(stream.StringToBytes(ui.ID))),
+		ProviderUserID: ui.ID,
 	}, nil
 }
 
@@ -68,5 +73,5 @@ type microsoftUserInfo struct {
 }
 
 func init() {
-	RegisterProvider(new(MicrosoftProvider))
+	RegisterProvider(newMicrosoftProvider())
 }

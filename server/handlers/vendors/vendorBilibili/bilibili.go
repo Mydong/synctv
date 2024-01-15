@@ -1,4 +1,4 @@
-package Vbilibili
+package vendorBilibili
 
 import (
 	"errors"
@@ -8,13 +8,11 @@ import (
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/db"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
-	"golang.org/x/exp/maps"
 )
 
 type ParseReq struct {
@@ -32,12 +30,8 @@ func (r *ParseReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(r)
 }
 
-func Vendors(ctx *gin.Context) {
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(maps.Keys(vendor.BilibiliClients())))
-}
-
 func Parse(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := ParseReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -45,7 +39,7 @@ func Parse(ctx *gin.Context) {
 		return
 	}
 
-	var cli = vendor.BilibiliClient(ctx.Query("vendor"))
+	var cli = vendor.LoadBilibiliClient(ctx.Query("backend"))
 
 	resp, err := cli.Match(ctx, &bilibili.MatchReq{
 		Url: req.URL,
@@ -55,16 +49,22 @@ func Parse(ctx *gin.Context) {
 		return
 	}
 
-	v, err := db.FirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
+	// can be no login
+	var cookies []*http.Cookie
+	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
+		if !errors.Is(err, db.ErrNotFound("vendor")) {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+	} else {
+		cookies = bucd.Cookies
 	}
 
 	switch resp.Type {
 	case "bv":
 		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
-			Cookies:  utils.HttpCookieToMap(v.Cookies),
+			Cookies:  utils.HttpCookieToMap(cookies),
 			Bvid:     resp.Id,
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
 		})
@@ -80,7 +80,7 @@ func Parse(ctx *gin.Context) {
 			return
 		}
 		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
-			Cookies:  utils.HttpCookieToMap(v.Cookies),
+			Cookies:  utils.HttpCookieToMap(cookies),
 			Aid:      aid,
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
 		})
@@ -96,7 +96,7 @@ func Parse(ctx *gin.Context) {
 			return
 		}
 		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
-			Cookies: utils.HttpCookieToMap(v.Cookies),
+			Cookies: utils.HttpCookieToMap(cookies),
 			Epid:    epid,
 		})
 		if err != nil {
@@ -111,7 +111,7 @@ func Parse(ctx *gin.Context) {
 			return
 		}
 		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
-			Cookies: utils.HttpCookieToMap(v.Cookies),
+			Cookies: utils.HttpCookieToMap(cookies),
 			Ssid:    ssid,
 		})
 		if err != nil {

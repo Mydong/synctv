@@ -6,8 +6,6 @@ var (
 
 	LogStd bool
 
-	ConfigFile string
-
 	SkipEnv bool
 
 	SkipConfig bool
@@ -17,4 +15,6 @@ var (
 	GitHubBaseURL string
 
 	DataDir string
+
+	ForceAutoMigrate bool
 )

@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/rtmp"
+	"github.com/synctv-org/synctv/internal/settings"
 	rtmps "github.com/zijiren233/livelib/server"
 )
 
@@ -31,10 +31,10 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 			log.Errorf("rtmp: get room by id error: %v", err)
 			return nil, err
 		}
-		return r.GetChannel(channelName)
+		return r.Value().GetChannel(channelName)
 	}
 
-	if !conf.Conf.Server.Rtmp.RtmpPlayer {
+	if !settings.RtmpPlayer.Get() {
 		log.Warnf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 		return nil, fmt.Errorf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 	}
@@ -43,5 +43,5 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 		log.Errorf("rtmp: get room by id error: %v", err)
 		return nil, err
 	}
-	return r.GetChannel(ReqChannelName)
+	return r.Value().GetChannel(ReqChannelName)
 }

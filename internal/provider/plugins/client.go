@@ -14,11 +14,12 @@ type GRPCClient struct{ client providerpb.Oauth2PluginClient }
 var _ provider.ProviderInterface = (*GRPCClient)(nil)
 
 func (c *GRPCClient) Init(o provider.Oauth2Option) {
-	c.client.Init(context.Background(), &providerpb.InitReq{
+	opt := providerpb.InitReq{
 		ClientId:     o.ClientID,
 		ClientSecret: o.ClientSecret,
 		RedirectUrl:  o.RedirectURL,
-	})
+	}
+	c.client.Init(context.Background(), &opt)
 }
 
 func (c *GRPCClient) Provider() provider.OAuth2Provider {
@@ -79,6 +80,6 @@ func (c *GRPCClient) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provid
 	}
 	return &provider.UserInfo{
 		Username:       resp.Username,
-		ProviderUserID: uint(resp.ProviderUserId),
+		ProviderUserID: resp.ProviderUserId,
 	}, nil
 }

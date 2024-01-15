@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/synctv-org/synctv/internal/model"
-	pb "github.com/synctv-org/synctv/proto/message"
 )
 
 type current struct {
@@ -48,18 +47,15 @@ func (c *current) Current() Current {
 	return c.current
 }
 
-func (c *current) Movie() model.Movie {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
-
-	return c.current.Movie
-}
-
-func (c *current) SetMovie(movie model.Movie, play bool) {
+func (c *current) SetMovie(movie *model.Movie, play bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	c.current.Movie = movie
+	if movie == nil {
+		c.current.Movie = model.Movie{}
+	} else {
+		c.current.Movie = *movie
+	}
 	c.current.SetSeek(0, 0)
 	c.current.Status.Playing = play
 }
@@ -83,47 +79,6 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 	defer c.lock.Unlock()
 
 	return c.current.SetSeekRate(seek, rate, timeDiff)
-}
-
-func (c *Current) Proto() *pb.Current {
-	current := &pb.Current{
-		Movie: &pb.MovieInfo{
-			Id: c.Movie.ID,
-			Base: &pb.BaseMovieInfo{
-				Url:        c.Movie.Base.Url,
-				Name:       c.Movie.Base.Name,
-				Live:       c.Movie.Base.Live,
-				Proxy:      c.Movie.Base.Proxy,
-				RtmpSource: c.Movie.Base.RtmpSource,
-				Type:       c.Movie.Base.Type,
-				Headers:    c.Movie.Base.Headers,
-			},
-			CreatedAt: c.Movie.CreatedAt.UnixMilli(),
-			Creator:   GetUserName(c.Movie.CreatorID),
-		},
-		Status: &pb.Status{
-			Seek:    c.Status.Seek,
-			Rate:    c.Status.Rate,
-			Playing: c.Status.Playing,
-		},
-	}
-	if c.Movie.Base.VendorInfo.Vendor != "" {
-		current.Movie.Base.VendorInfo = &pb.VendorInfo{
-			Vendor: string(c.Movie.Base.VendorInfo.Vendor),
-			Shared: c.Movie.Base.VendorInfo.Shared,
-		}
-		switch c.Movie.Base.VendorInfo.Vendor {
-		case model.StreamingVendorBilibili:
-			current.Movie.Base.VendorInfo.Bilibili = &pb.BilibiliVendorInfo{
-				Bvid:       c.Movie.Base.VendorInfo.Bilibili.Bvid,
-				Cid:        c.Movie.Base.VendorInfo.Bilibili.Cid,
-				Epid:       c.Movie.Base.VendorInfo.Bilibili.Epid,
-				Quality:    c.Movie.Base.VendorInfo.Bilibili.Quality,
-				VendorName: c.Movie.Base.VendorInfo.Bilibili.VendorName,
-			}
-		}
-	}
-	return current
 }
 
 func (c *Current) UpdateSeek() {

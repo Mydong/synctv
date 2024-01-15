@@ -33,7 +33,7 @@ func (p *PushMovieReq) Validate() error {
 
 	if p.Name == "" {
 		return ErrEmptyName
-	} else if len(p.Name) > 512 {
+	} else if len(p.Name) > 128 {
 		return ErrNameTooLong
 	}
 
@@ -145,9 +145,11 @@ func (s *SwapMovieReq) Validate() error {
 }
 
 type MoviesResp struct {
-	Id      string          `json:"id"`
-	Base    model.BaseMovie `json:"base"`
-	Creator string          `json:"creator"`
+	Id        string          `json:"id"`
+	CreatedAt int64           `json:"createAt"`
+	Base      model.BaseMovie `json:"base"`
+	Creator   string          `json:"creator"`
+	CreatorId string          `json:"creatorId"`
 }
 
 type CurrentMovieResp struct {

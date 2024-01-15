@@ -22,11 +22,33 @@ var _ Int64Setting = (*Int64)(nil)
 
 type Int64 struct {
 	setting
-	defaultValue int64
-	value        int64
+	defaultValue          int64
+	value                 int64
+	validator             func(int64) error
+	beforeInit, beforeSet func(Int64Setting, int64) (int64, error)
 }
 
-func NewInt64(name string, value int64, group model.SettingGroup) *Int64 {
+type Int64SettingOption func(*Int64)
+
+func WithValidatorInt64(validator func(int64) error) Int64SettingOption {
+	return func(s *Int64) {
+		s.validator = validator
+	}
+}
+
+func WithBeforeInitInt64(beforeInit func(Int64Setting, int64) (int64, error)) Int64SettingOption {
+	return func(s *Int64) {
+		s.beforeInit = beforeInit
+	}
+}
+
+func WithBeforeSetInt64(beforeSet func(Int64Setting, int64) (int64, error)) Int64SettingOption {
+	return func(s *Int64) {
+		s.beforeSet = beforeSet
+	}
+}
+
+func newInt64(name string, value int64, group model.SettingGroup, options ...Int64SettingOption) *Int64 {
 	i := &Int64{
 		setting: setting{
 			name:        name,
@@ -36,11 +58,21 @@ func NewInt64(name string, value int64, group model.SettingGroup) *Int64 {
 		defaultValue: value,
 		value:        value,
 	}
+	for _, option := range options {
+		option(i)
+	}
 	return i
 }
 
 func (i *Int64) Parse(value string) (int64, error) {
-	return strconv.ParseInt(value, 10, 64)
+	v, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if i.validator != nil {
+		return v, i.validator(v)
+	}
+	return v, nil
 }
 
 func (i *Int64) Stringify(value int64) string {
@@ -52,6 +84,14 @@ func (i *Int64) Init(value string) error {
 	if err != nil {
 		return err
 	}
+
+	if i.beforeInit != nil {
+		v, err = i.beforeInit(i, v)
+		if err != nil {
+			return err
+		}
+	}
+
 	i.set(v)
 	return nil
 }
@@ -60,37 +100,66 @@ func (i *Int64) Default() int64 {
 	return i.defaultValue
 }
 
-func (i *Int64) DefaultRaw() string {
-	return strconv.FormatInt(i.defaultValue, 10)
+func (i *Int64) DefaultString() string {
+	return i.Stringify(i.defaultValue)
 }
 
 func (i *Int64) DefaultInterface() any {
-	return i.defaultValue
+	return i.Default()
 }
 
-func (i *Int64) Raw() string {
+func (i *Int64) String() string {
 	return i.Stringify(i.Get())
 }
 
-func (i *Int64) SetRaw(value string) error {
-	err := i.Init(value)
+func (i *Int64) SetString(value string) error {
+	v, err := i.Parse(value)
 	if err != nil {
 		return err
 	}
-	return db.UpdateSettingItemValue(i.Name(), i.Raw())
+
+	if i.beforeSet != nil {
+		v, err = i.beforeSet(i, v)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = db.UpdateSettingItemValue(i.name, i.Stringify(v))
+	if err != nil {
+		return err
+	}
+
+	i.set(v)
+	return nil
 }
 
 func (i *Int64) set(value int64) {
 	atomic.StoreInt64(&i.value, value)
 }
 
-func (i *Int64) Set(value int64) error {
-	err := db.UpdateSettingItemValue(i.Name(), i.Stringify(value))
+func (i *Int64) Set(v int64) (err error) {
+	if i.validator != nil {
+		err = i.validator(v)
+		if err != nil {
+			return err
+		}
+	}
+
+	if i.beforeSet != nil {
+		v, err = i.beforeSet(i, v)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = db.UpdateSettingItemValue(i.name, i.Stringify(v))
 	if err != nil {
 		return err
 	}
-	i.set(value)
-	return nil
+
+	i.set(v)
+	return
 }
 
 func (i *Int64) Get() int64 {
@@ -101,12 +170,12 @@ func (i *Int64) Interface() any {
 	return i.Get()
 }
 
-func newInt64Setting(k string, v int64, g model.SettingGroup) *Int64 {
+func NewInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64SettingOption) *Int64 {
 	_, loaded := Settings[k]
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
-	i := NewInt64(k, v, g)
+	i := newInt64(k, v, g, options...)
 	Settings[k] = i
 	GroupSettings[g] = append(GroupSettings[g], i)
 	return i

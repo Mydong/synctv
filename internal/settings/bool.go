@@ -22,11 +22,26 @@ var _ BoolSetting = (*Bool)(nil)
 
 type Bool struct {
 	setting
-	defaultValue bool
-	value        uint32
+	defaultValue          bool
+	value                 uint32
+	beforeInit, beforeSet func(BoolSetting, bool) (bool, error)
 }
 
-func NewBool(name string, value bool, group model.SettingGroup) *Bool {
+type BoolSettingOption func(*Bool)
+
+func WithBeforeInitBool(beforeInit func(BoolSetting, bool) (bool, error)) BoolSettingOption {
+	return func(s *Bool) {
+		s.beforeInit = beforeInit
+	}
+}
+
+func WithBeforeSetBool(beforeSet func(BoolSetting, bool) (bool, error)) BoolSettingOption {
+	return func(s *Bool) {
+		s.beforeSet = beforeSet
+	}
+}
+
+func newBool(name string, value bool, group model.SettingGroup, options ...BoolSettingOption) *Bool {
 	b := &Bool{
 		setting: setting{
 			name:        name,
@@ -34,6 +49,9 @@ func NewBool(name string, value bool, group model.SettingGroup) *Bool {
 			settingType: model.SettingTypeBool,
 		},
 		defaultValue: value,
+	}
+	for _, option := range options {
+		option(b)
 	}
 	b.set(value)
 	return b
@@ -56,6 +74,14 @@ func (b *Bool) Init(value string) error {
 	if err != nil {
 		return err
 	}
+
+	if b.beforeInit != nil {
+		v, err = b.beforeInit(b, v)
+		if err != nil {
+			return err
+		}
+	}
+
 	b.set(v)
 	return nil
 }
@@ -72,11 +98,11 @@ func (b *Bool) Default() bool {
 	return b.defaultValue
 }
 
-func (b *Bool) DefaultRaw() string {
+func (b *Bool) DefaultString() string {
 	return b.Stringify(b.defaultValue)
 }
 
-func (b *Bool) Raw() string {
+func (b *Bool) String() string {
 	return b.Stringify(b.Get())
 }
 
@@ -84,33 +110,55 @@ func (b *Bool) DefaultInterface() any {
 	return b.Default()
 }
 
-func (b *Bool) SetRaw(value string) error {
-	err := b.Init(value)
+func (b *Bool) SetString(value string) error {
+	v, err := b.Parse(value)
 	if err != nil {
 		return err
 	}
-	return db.UpdateSettingItemValue(b.Name(), b.Raw())
+
+	if b.beforeSet != nil {
+		v, err = b.beforeSet(b, v)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = db.UpdateSettingItemValue(b.name, b.Stringify(v))
+	if err != nil {
+		return err
+	}
+
+	b.set(v)
+	return nil
 }
 
-func (b *Bool) Set(value bool) error {
-	err := db.UpdateSettingItemValue(b.Name(), b.Stringify(value))
+func (b *Bool) Set(v bool) (err error) {
+	if b.beforeSet != nil {
+		v, err = b.beforeSet(b, v)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = db.UpdateSettingItemValue(b.name, b.Stringify(v))
 	if err != nil {
 		return err
 	}
-	b.set(value)
-	return nil
+
+	b.set(v)
+	return
 }
 
 func (b *Bool) Interface() any {
 	return b.Get()
 }
 
-func newBoolSetting(k string, v bool, g model.SettingGroup) BoolSetting {
+func NewBoolSetting(k string, v bool, g model.SettingGroup, options ...BoolSettingOption) BoolSetting {
 	_, loaded := Settings[k]
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
-	b := NewBool(k, v, g)
+	b := newBool(k, v, g, options...)
 	Settings[k] = b
 	GroupSettings[g] = append(GroupSettings[g], b)
 	return b

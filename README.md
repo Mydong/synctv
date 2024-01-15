@@ -44,8 +44,14 @@ The theater feature provides a chat and bullet chat function, allowing you to co
   - [x] Chat
   - [x] Bullet chat
 - [x] Proxy
-  - [ ] Videos proxy
-  - [ ] Live proxy
+  - [x] Videos proxy
+  - [x] Live proxy
+- [x] Parse
+  - [x] Parse video
+    - [x] Alist
+    - [x] Bilibili
+    - [x] Emby
+  - [ ] Parse live
 
 ---
 
@@ -62,7 +68,7 @@ You can download the latest binary from [release page](https://github.com/synctv
 You can use the script to install and run SyncTV.
 
 ```bash
-sudo -v ; curl https://raw.githubusercontent.com/synctv-org/synctv/main/install.sh | sudo bash -s -- -v latest
+sudo -v ; curl -fsSL https://raw.gitmirror.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
 ```
 
 ## Docker
@@ -83,10 +89,15 @@ synctv server
 synctv server --data-dir ./
 ```
 
+> Every time it starts, it will check for users with root permissions. If none are found, it will initialize a `root` user with the password `root`. Please change the username and password promptly.
+> 
+> The user registration function requires the use of any `OAuth2` service, such as `Google`, `Github`, etc. For specific configuration, please refer to [documentation](https://synctv.wiki/#/oauth2).
+
 # Documentation
 https://synctv.wiki
 
----
+# Special sponsors
+- [亚洲云](https://www.asiayun.com) supports the server for the demo site.
 
 # Contributors
 Thanks goes to these wonderful people:
@@ -102,3 +113,6 @@ The `SyncTV` is open-source software licensed under the AGPL-3.0 license.
 - The program only plays video files/forwards traffic on the client-side and will not intercept, store, or tamper with any user data.
 - Before using the program, you should understand and assume the corresponding risks, including but not limited to copyright disputes, legal restrictions, etc., which are not related to the program.
 - If there is any infringement, please contact me via [email](mailto:pyh1670605849@gmail.com), and it will be dealt with promptly.
+
+# Discussion
+- [Telegram](https://t.me/synctv)
