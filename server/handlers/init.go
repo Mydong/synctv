@@ -11,57 +11,53 @@ import (
 )
 
 func Init(e *gin.Engine) {
+	api := e.Group("/api")
+
+	needAuthUserApi := api.Group("", middlewares.AuthUserMiddleware)
+
+	needAuthRoomApi := api.Group("", middlewares.AuthRoomMiddleware)
+
 	{
-		api := e.Group("/api")
+		public := api.Group("/public")
 
-		needAuthUserApi := api.Group("")
-		needAuthUserApi.Use(middlewares.AuthUserMiddleware)
+		public.GET("/settings", Settings)
+	}
 
-		needAuthRoomApi := api.Group("")
-		needAuthRoomApi.Use(middlewares.AuthRoomMiddleware)
+	{
+		admin := api.Group("/admin")
+		root := api.Group("/admin")
+		admin.Use(middlewares.AuthAdminMiddleware)
+		root.Use(middlewares.AuthRootMiddleware)
 
-		{
-			public := api.Group("/public")
+		initAdmin(admin, root)
+	}
 
-			public.GET("/settings", Settings)
-		}
+	{
+		room := api.Group("/room")
+		needAuthRoom := needAuthRoomApi.Group("/room")
+		needAuthUser := needAuthUserApi.Group("/room")
 
-		{
-			admin := api.Group("/admin")
-			root := api.Group("/admin")
-			admin.Use(middlewares.AuthAdminMiddleware)
-			root.Use(middlewares.AuthRootMiddleware)
+		initRoom(room, needAuthUser, needAuthRoom)
+	}
 
-			initAdmin(admin, root)
-		}
+	{
+		movie := api.Group("/movie")
+		needAuthMovie := needAuthRoomApi.Group("/movie")
 
-		{
-			room := api.Group("/room")
-			needAuthRoom := needAuthRoomApi.Group("/room")
-			needAuthUser := needAuthUserApi.Group("/room")
+		initMovie(movie, needAuthMovie)
+	}
 
-			initRoom(room, needAuthUser, needAuthRoom)
-		}
+	{
+		user := api.Group("/user")
+		needAuthUser := needAuthUserApi.Group("/user")
 
-		{
-			movie := api.Group("/movie")
-			needAuthMovie := needAuthRoomApi.Group("/movie")
+		initUser(user, needAuthUser)
+	}
 
-			initMovie(movie, needAuthMovie)
-		}
+	{
+		vendor := needAuthUserApi.Group("/vendor")
 
-		{
-			user := api.Group("/user")
-			needAuthUser := needAuthUserApi.Group("/user")
-
-			initUser(user, needAuthUser)
-		}
-
-		{
-			vendor := needAuthUserApi.Group("/vendor")
-
-			initVendor(vendor)
-		}
+		initVendor(vendor)
 	}
 }
 
@@ -186,11 +182,18 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 	movie.GET("/proxy/:roomId/:movieId", ProxyMovie)
 
 	{
-		live := needAuthMovie.Group("/live")
+		live := movie.Group("/live")
+		needAuthLive := needAuthMovie.Group("/live")
 
-		live.POST("/publishKey", NewPublishKey)
+		needAuthLive.POST("/publishKey", NewPublishKey)
 
-		live.GET("/*movieId", JoinLive)
+		// needAuthLive.GET("/join/:movieId", JoinLive)
+
+		needAuthLive.GET("/flv/:movieId", JoinFlvLive)
+
+		needAuthLive.GET("/hls/list/:movieId", JoinHlsLive)
+
+		live.GET("/hls/data/:roomId/:movieId/:dataId", ServeHlsLive)
 	}
 }
 

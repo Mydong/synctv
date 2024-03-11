@@ -3,6 +3,7 @@ package op
 import (
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"net/url"
 	"sync/atomic"
 	"time"
@@ -22,11 +23,48 @@ import (
 )
 
 type Movie struct {
-	Movie         model.Movie
+	model.Movie
 	channel       atomic.Pointer[rtmps.Channel]
 	alistCache    atomic.Pointer[cache.AlistMovieCache]
 	bilibiliCache atomic.Pointer[cache.BilibiliMovieCache]
 	embyCache     atomic.Pointer[cache.EmbyMovieCache]
+}
+
+func (m *Movie) ExpireId() uint64 {
+	switch {
+	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist:
+		amcd, _ := m.AlistCache().Raw()
+		if amcd != nil && amcd.Ali != nil {
+			return uint64(m.AlistCache().Last())
+		}
+		fallthrough
+	default:
+		return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
+	}
+}
+
+func (m *Movie) CheckExpired(expireId uint64) bool {
+	switch {
+	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist:
+		amcd, _ := m.AlistCache().Raw()
+		if amcd != nil && amcd.Ali != nil {
+			return time.Now().UnixNano()-int64(expireId) > m.AlistCache().MaxAge()
+		}
+		fallthrough
+	default:
+		return expireId != m.ExpireId()
+	}
+}
+
+func (m *Movie) ClearCache() {
+	m.alistCache.Store(nil)
+
+	bmc := m.bilibiliCache.Swap(nil)
+	if bmc != nil {
+		bmc.NoSharedMovie.Clear()
+	}
+
+	m.embyCache.Store(nil)
 }
 
 func (m *Movie) AlistCache() *cache.AlistMovieCache {
@@ -121,7 +159,10 @@ func (m *Movie) initChannel() error {
 			}()
 		case "http", "https":
 			c := m.compareAndSwapInitChannel()
-			c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
+			err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
+			if err != nil {
+				return err
+			}
 			go func() {
 				for {
 					if c.Closed() {
@@ -233,8 +274,6 @@ func (movie *Movie) validateVendorMovie() error {
 	default:
 		return fmt.Errorf("vendor not implement validate")
 	}
-
-	return nil
 }
 
 func (m *Movie) Terminate() error {
@@ -245,14 +284,11 @@ func (m *Movie) Terminate() error {
 			return err
 		}
 	}
-	bmc := m.bilibiliCache.Swap(nil)
-	if bmc != nil {
-		bmc.NoSharedMovie.Clear()
-	}
 	return nil
 }
 
 func (m *Movie) Update(movie *model.BaseMovie) error {
 	m.Movie.Base = *movie
+	m.ClearCache()
 	return m.Terminate()
 }

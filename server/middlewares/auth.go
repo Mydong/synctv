@@ -8,9 +8,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/zijiren233/gencontainer/synccache"
 	"github.com/zijiren233/stream"
 )
 
@@ -179,8 +181,44 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
+func AuthUserMiddleware(ctx *gin.Context) {
+	token, err := GetAuthorizationTokenFromContext(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	userE, err := AuthUser(token)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	user := userE.Value()
+	if user.IsBanned() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user banned"))
+		return
+	}
+	if user.IsPending() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is pending, need admin to approve"))
+		return
+	}
+
+	ctx.Set("user", userE)
+	log := ctx.MustGet("log").(*logrus.Entry)
+	if log.Data == nil {
+		log.Data = make(logrus.Fields, 3)
+	}
+	log.Data["uid"] = user.ID
+	log.Data["unm"] = user.Username
+	log.Data["uro"] = user.Role.String()
+}
+
 func AuthRoomMiddleware(ctx *gin.Context) {
-	userE, roomE, err := AuthRoom(ctx.GetHeader("Authorization"))
+	token, err := GetAuthorizationTokenFromContext(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	userE, roomE, err := AuthRoom(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
@@ -208,54 +246,51 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 
 	ctx.Set("user", userE)
 	ctx.Set("room", roomE)
-	ctx.Next()
-}
-
-func AuthUserMiddleware(ctx *gin.Context) {
-	user, err := AuthUser(ctx.GetHeader("Authorization"))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-		return
+	log := ctx.MustGet("log").(*logrus.Entry)
+	if log.Data == nil {
+		log.Data = make(logrus.Fields, 5)
 	}
-	if user.Value().IsBanned() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user banned"))
-		return
-	}
-	if user.Value().IsPending() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is pending, need admin to approve"))
-		return
-	}
-
-	ctx.Set("user", user)
-	ctx.Next()
+	log.Data["rid"] = room.ID
+	log.Data["rnm"] = room.Name
+	log.Data["uid"] = user.ID
+	log.Data["unm"] = user.Username
+	log.Data["uro"] = user.Role.String()
 }
 
 func AuthAdminMiddleware(ctx *gin.Context) {
-	user, err := AuthUser(ctx.GetHeader("Authorization"))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+	AuthUserMiddleware(ctx)
+	if ctx.IsAborted() {
 		return
 	}
-	if !user.Value().IsAdmin() {
+
+	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !userE.Value().IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not admin"))
 		return
 	}
-
-	ctx.Set("user", user)
-	ctx.Next()
 }
 
 func AuthRootMiddleware(ctx *gin.Context) {
-	user, err := AuthUser(ctx.GetHeader("Authorization"))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-		return
-	}
-	if !user.Value().IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not root"))
+	AuthUserMiddleware(ctx)
+	if ctx.IsAborted() {
 		return
 	}
 
-	ctx.Set("user", user)
-	ctx.Next()
+	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !userE.Value().IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not root"))
+		return
+	}
+}
+
+func GetAuthorizationTokenFromContext(ctx *gin.Context) (string, error) {
+	Authorization := ctx.GetHeader("Authorization")
+	if Authorization != "" {
+		return Authorization, nil
+	}
+	Authorization = ctx.Query("token")
+	if Authorization != "" {
+		return Authorization, nil
+	}
+	return "", errors.New("token is empty")
 }
