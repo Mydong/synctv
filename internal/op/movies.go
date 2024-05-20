@@ -2,47 +2,24 @@ package op
 
 import (
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/dllist"
+	"github.com/zijiren233/gencontainer/rwmap"
 	rtmps "github.com/zijiren233/livelib/server"
+	"gorm.io/gorm"
 )
 
 type movies struct {
 	roomID string
-	lock   sync.RWMutex
-	list   dllist.Dllist[*Movie]
-	once   sync.Once
-}
-
-func (m *movies) init() {
-	m.once.Do(func() {
-		for _, m2 := range db.GetAllMoviesByRoomID(m.roomID) {
-			m.list.PushBack(&Movie{
-				Movie: *m2,
-			})
-		}
-	})
-}
-
-func (m *movies) Len() int {
-	m.init()
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	return m.list.Len()
+	cache  rwmap.RWMap[string, *Movie]
 }
 
 func (m *movies) AddMovie(mo *model.Movie) error {
-	m.init()
-	m.lock.Lock()
-	defer m.lock.Unlock()
 	mo.Position = uint(time.Now().UnixMilli())
 	movie := &Movie{
-		Movie: *mo,
+		Movie: mo,
 	}
 
 	err := movie.Validate()
@@ -55,20 +32,19 @@ func (m *movies) AddMovie(mo *model.Movie) error {
 		return err
 	}
 
-	movie.Movie.ID = mo.ID
-	m.list.PushBack(movie)
+	old, ok := m.cache.Swap(mo.ID, movie)
+	if ok {
+		_ = old.Close()
+	}
 	return nil
 }
 
 func (m *movies) AddMovies(mos []*model.Movie) error {
-	m.init()
-	m.lock.Lock()
-	defer m.lock.Unlock()
 	inited := make([]*Movie, 0, len(mos))
 	for _, mo := range mos {
 		mo.Position = uint(time.Now().UnixMilli())
 		movie := &Movie{
-			Movie: *mo,
+			Movie: mo,
 		}
 
 		err := movie.Validate()
@@ -84,9 +60,11 @@ func (m *movies) AddMovies(mos []*model.Movie) error {
 		return err
 	}
 
-	for i, mo := range inited {
-		mo.Movie.ID = mos[i].ID
-		m.list.PushBack(mo)
+	for _, mo := range inited {
+		old, ok := m.cache.Swap(mo.Movie.ID, mo)
+		if ok {
+			_ = old.Close()
+		}
 	}
 
 	return nil
@@ -103,135 +81,132 @@ func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
 	return movie.Channel()
 }
 
-func (m *movies) Update(movieId string, movie *model.BaseMovie) error {
-	m.init()
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.Movie.ID == movieId {
-			err := e.Value.Update(movie)
-			if err != nil {
-				return err
-			}
-			return db.SaveMovie(&e.Value.Movie)
-		}
+func (m *movies) Update(movieId string, movie *model.MovieBase) error {
+	mv, err := db.GetMovieByID(m.roomID, movieId)
+	if err != nil {
+		return err
+	}
+	mv.MovieBase = *movie
+	err = db.SaveMovie(mv)
+	if err != nil {
+		return err
+	}
+	mm, ok := m.cache.LoadOrStore(mv.ID, &Movie{Movie: mv})
+	if ok {
+		_ = mm.Close()
 	}
 	return nil
 }
 
 func (m *movies) Clear() error {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	err := db.DeleteMoviesByRoomID(m.roomID)
-	if err != nil {
-		return err
-	}
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		e.Value.Terminate()
-	}
-	m.list.Clear()
-	return nil
+	return m.DeleteMovieByParentID("")
 }
 
 func (m *movies) Close() error {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		e.Value.Terminate()
+	m.DeleteMovieAndChiledCache("")
+	return nil
+}
+
+func (m *movies) DeleteMovieByParentID(parentID string) error {
+	err := db.DeleteMoviesByRoomIDAndParentID(m.roomID, parentID)
+	if err != nil {
+		return err
 	}
-	m.list.Clear()
+	m.DeleteMovieAndChiledCache("")
 	return nil
 }
 
 func (m *movies) DeleteMovieByID(id string) error {
-	m.init()
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
 	err := db.DeleteMovieByID(m.roomID, id)
 	if err != nil {
 		return err
 	}
-
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.Movie.ID == id {
-			m.list.Remove(e).Terminate()
-			return nil
-		}
-	}
-	return errors.New("movie not found")
-}
-
-func (m *movies) GetMovieByID(id string) (*Movie, error) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	return m.getMovieByID(id)
-}
-
-func (m *movies) getMovieByID(id string) (*Movie, error) {
-	if id == "" {
-		return nil, errors.New("movie id is nil")
-	}
-	m.init()
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.Movie.ID == id {
-			return e.Value, nil
-		}
-	}
-	return nil, errors.New("movie not found")
-}
-
-func (m *movies) getMovieElementByID(id string) (*dllist.Element[*Movie], error) {
-	m.init()
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.Movie.ID == id {
-			return e, nil
-		}
-	}
-	return nil, errors.New("movie not found")
-}
-
-func (m *movies) SwapMoviePositions(id1, id2 string) error {
-	m.init()
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	err := db.SwapMoviePositions(m.roomID, id1, id2)
-	if err != nil {
-		return err
-	}
-
-	movie1, err := m.getMovieElementByID(id1)
-	if err != nil {
-		return err
-	}
-
-	movie2, err := m.getMovieElementByID(id2)
-	if err != nil {
-		return err
-	}
-
-	movie1.Value.Movie.Position, movie2.Value.Movie.Position = movie2.Value.Movie.Position, movie1.Value.Movie.Position
-
-	m.list.Swap(movie1, movie2)
+	m.DeleteMovieAndChiledCache(id)
 	return nil
 }
 
-func (m *movies) GetMoviesWithPage(page, pageSize int) []*Movie {
-	m.init()
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-
-	start, end := utils.GetPageItemsRange(m.list.Len(), page, pageSize)
-	ms := make([]*Movie, 0, end-start)
-	i := 0
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		if i >= start && i < end {
-			ms = append(ms, e.Value)
-		} else if i >= end {
-			return ms
-		}
-		i++
+func (m *movies) DeleteMovieAndChiledCache(id ...string) {
+	idm := make(map[model.EmptyNullString]struct{}, len(id))
+	for _, id := range id {
+		idm[model.EmptyNullString(id)] = struct{}{}
 	}
-	return ms
+	m.deleteMovieAndChiledCache(idm)
+}
+
+func (m *movies) deleteMovieAndChiledCache(ids map[model.EmptyNullString]struct{}) {
+	next := make(map[model.EmptyNullString]struct{})
+	m.cache.Range(func(key string, value *Movie) bool {
+		if _, ok := ids[value.ParentID]; ok {
+			if value.IsFolder {
+				next[model.EmptyNullString(value.ID)] = struct{}{}
+			} else {
+				m.cache.Delete(key)
+			}
+			value.Close()
+		}
+		return true
+	})
+	if len(next) > 0 {
+		m.deleteMovieAndChiledCache(next)
+	}
+}
+
+func (m *movies) DeleteMoviesByID(ids []string) error {
+	err := db.DeleteMoviesByID(m.roomID, ids)
+	if err != nil {
+		return err
+	}
+	m.DeleteMovieAndChiledCache(ids...)
+	return nil
+}
+
+func (m *movies) GetMovieByID(id string) (*Movie, error) {
+	if id == "" {
+		return nil, errors.New("movie id is nil")
+	}
+	mm, ok := m.cache.Load(id)
+	if ok {
+		return mm, nil
+	}
+	mv, err := db.GetMovieByID(m.roomID, id)
+	if err != nil {
+		return nil, err
+	}
+	mo := &Movie{Movie: mv}
+	mm, _ = m.cache.LoadOrStore(mv.ID, mo)
+	return mm, nil
+}
+
+func (m *movies) SwapMoviePositions(id1, id2 string) error {
+	return db.SwapMoviePositions(m.roomID, id1, id2)
+}
+
+func (m *movies) GetMoviesWithPage(page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+	scopes := []func(*gorm.DB) *gorm.DB{
+		db.WithParentMovieID(parentID),
+	}
+	count, err := db.GetMoviesCountByRoomID(m.roomID, append(scopes, db.Paginate(page, pageSize))...)
+	if err != nil {
+		return nil, 0, err
+	}
+	movies, err := db.GetMoviesByRoomID(m.roomID, scopes...)
+	if err != nil {
+		return nil, 0, err
+	}
+	return movies, count, nil
+}
+
+// IsParentOf check if parentID is the parent of id
+func (m *movies) IsParentOf(parentID, id string) (bool, error) {
+	mv, err := m.GetMovieByID(id)
+	if err != nil {
+		return false, err
+	}
+	if mv.ParentID == "" {
+		return false, nil
+	}
+	if mv.ParentID == model.EmptyNullString(parentID) {
+		return true, nil
+	}
+	return m.IsParentOf(string(mv.ParentID), id)
 }

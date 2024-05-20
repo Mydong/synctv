@@ -300,7 +300,7 @@ func getLocalIPs() []net.IP {
 
 func OptFilePath(filePath string) (string, error) {
 	if !filepath.IsAbs(filePath) {
-		return filepath.Abs(filepath.Join(flags.DataDir, filePath))
+		return filepath.Abs(filepath.Join(flags.Global.DataDir, filePath))
 	}
 	return filePath, nil
 }
@@ -338,6 +338,10 @@ func MapToHttpCookie(m map[string]string) []*http.Cookie {
 	return c
 }
 
+func GetFileExtension(f string) string {
+	return strings.TrimLeft(filepath.Ext(f), ".")
+}
+
 func GetUrlExtension(u string) string {
 	if u == "" {
 		return ""
@@ -346,7 +350,7 @@ func GetUrlExtension(u string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimLeft(filepath.Ext(p.Path), ".")
+	return GetFileExtension(p.Path)
 }
 
 var (
@@ -356,7 +360,7 @@ var (
 
 func ForceColor() bool {
 	needColorOnce.Do(func() {
-		if flags.DisableLogColor {
+		if flags.Server.DisableLogColor {
 			needColor = false
 			return
 		}

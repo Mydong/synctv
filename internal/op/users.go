@@ -43,6 +43,15 @@ func LoadOrInitUserByID(id string) (*UserEntry, error) {
 	return LoadOrInitUser(user)
 }
 
+func LoadOrInitUserByEmail(email string) (*UserEntry, error) {
+	u, err := db.GetUserByEmail(email)
+	if err != nil {
+		return nil, err
+	}
+
+	return LoadOrInitUser(u)
+}
+
 func LoadUserByUsername(username string) (*UserEntry, error) {
 	u, err := db.GetUserByUsername(username)
 	if err != nil {
@@ -77,10 +86,25 @@ func CreateUser(username string, password string, conf ...db.CreateUserConfig) (
 }
 
 func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*UserEntry, error) {
-	if username == "" {
-		return nil, errors.New("username cannot be empty")
-	}
 	u, err := db.CreateOrLoadUserWithProvider(username, password, p, pid, conf...)
+	if err != nil {
+		return nil, err
+	}
+
+	return LoadOrInitUser(u)
+}
+
+func CreateOrLoadUserWithEmail(username, password, email string, conf ...db.CreateUserConfig) (*UserEntry, error) {
+	u, err := db.CreateOrLoadUserWithEmail(username, password, email, conf...)
+	if err != nil {
+		return nil, err
+	}
+
+	return LoadOrInitUser(u)
+}
+
+func CreateUserWithEmail(username, password, email string, conf ...db.CreateUserConfig) (*UserEntry, error) {
+	u, err := db.CreateUserWithEmail(username, password, email, conf...)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +122,11 @@ func GetUserByProvider(p provider.OAuth2Provider, pid string) (*UserEntry, error
 }
 
 func CompareAndDeleteUser(user *UserEntry) error {
-	err := db.DeleteUserByID(user.Value().ID)
+	id := user.Value().ID
+	if id == db.GuestUserID {
+		return errors.New("cannot delete guest user")
+	}
+	err := db.DeleteUserByID(id)
 	if err != nil {
 		return err
 	}
@@ -106,6 +134,9 @@ func CompareAndDeleteUser(user *UserEntry) error {
 }
 
 func DeleteUserByID(id string) error {
+	if id == db.GuestUserID {
+		return errors.New("cannot delete guest user")
+	}
 	err := db.DeleteUserByID(id)
 	if err != nil {
 		return err

@@ -17,11 +17,12 @@ import (
 	"github.com/synctv-org/vendors/api/bilibili"
 	"github.com/zencoder/go-dash/v3/mpd"
 	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/go-uhc"
 )
 
 type BilibiliMpdCache struct {
-	Mpd     string
-	HevcMpd string
+	Mpd     *mpd.MPD
+	HevcMpd *mpd.MPD
 	Urls    []string
 }
 
@@ -49,9 +50,9 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 	} else {
 		cookies = vendorInfo.Cookies
 	}
-	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
 	var m, hevcM *mpd.MPD
-	biliInfo := movie.Base.VendorInfo.Bilibili
+	biliInfo := movie.MovieBase.VendorInfo.Bilibili
 	switch {
 	case biliInfo.Epid != 0:
 		resp, err := cli.GetDashPGCURL(ctx, &bilibili.GetDashPGCURLReq{
@@ -115,19 +116,46 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 			}
 		}
 	}
-	s, err := m.WriteToString()
-	if err != nil {
-		return nil, err
-	}
-	s2, err := hevcM.WriteToString()
-	if err != nil {
-		return nil, err
-	}
 	return &BilibiliMpdCache{
 		Urls:    movies,
-		Mpd:     s,
-		HevcMpd: s2,
+		Mpd:     m,
+		HevcMpd: hevcM,
 	}, nil
+}
+
+func BilibiliMpdToString(mpdRaw *mpd.MPD, token string) (string, error) {
+	newMpdRaw := *mpdRaw
+	newPeriods := make([]*mpd.Period, len(mpdRaw.Periods))
+	for i, p := range mpdRaw.Periods {
+		n := *p
+		newPeriods[i] = &n
+	}
+	newMpdRaw.Periods = newPeriods
+	for _, p := range newMpdRaw.Periods {
+		newAdaptationSets := make([]*mpd.AdaptationSet, len(p.AdaptationSets))
+		for i, as := range p.AdaptationSets {
+			n := *as
+			newAdaptationSets[i] = &n
+		}
+		p.AdaptationSets = newAdaptationSets
+		for _, as := range p.AdaptationSets {
+			newRepresentations := make([]*mpd.Representation, len(as.Representations))
+			for i, r := range as.Representations {
+				n := *r
+				newRepresentations[i] = &n
+			}
+			as.Representations = newRepresentations
+			for _, r := range as.Representations {
+				newBaseURL := make([]string, len(r.BaseURL))
+				copy(newBaseURL, r.BaseURL)
+				r.BaseURL = newBaseURL
+				for i := range r.BaseURL {
+					r.BaseURL[i] = fmt.Sprintf("%s&token=%s", r.BaseURL[i], token)
+				}
+			}
+		}
+	}
+	return newMpdRaw.WriteToString()
 }
 
 func NewBilibiliNoSharedMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, key string, args ...*BilibiliUserCache) (string, error) {
@@ -149,9 +177,9 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, movie *model.Movie,
 	} else {
 		cookies = vendorInfo.Cookies
 	}
-	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
 	var u string
-	biliInfo := movie.Base.VendorInfo.Bilibili
+	biliInfo := movie.MovieBase.VendorInfo.Bilibili
 	switch {
 	case biliInfo.Epid != 0:
 		resp, err := cli.GetPGCURL(ctx, &bilibili.GetPGCURLReq{
@@ -211,7 +239,7 @@ func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args
 		return nil, errors.New("no bilibili user cache data")
 	}
 
-	biliInfo := movie.Base.VendorInfo.Bilibili
+	biliInfo := movie.MovieBase.VendorInfo.Bilibili
 	if biliInfo.Bvid == "" || biliInfo.Cid == 0 {
 		return nil, errors.New("bvid or cid is empty")
 	}
@@ -227,7 +255,7 @@ func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args
 		cookies = vendorInfo.Cookies
 	}
 
-	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
 	resp, err := cli.GetSubtitles(ctx, &bilibili.GetSubtitlesReq{
 		Cookies: utils.HttpCookieToMap(cookies),
 		Bvid:    biliInfo.Bvid,
@@ -283,7 +311,7 @@ func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, er
 	}
 	r.Header.Set("User-Agent", utils.UA)
 	r.Header.Set("Referer", "https://www.bilibili.com")
-	resp, err := http.DefaultClient.Do(r)
+	resp, err := uhc.Do(r)
 	if err != nil {
 		return nil, err
 	}
@@ -296,10 +324,46 @@ func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, er
 	return convertToSRT(&srt), nil
 }
 
+type BilibiliLiveCache struct {
+}
+
+func NewBilibiliLiveCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...struct{}) ([]byte, error) {
+	return func(ctx context.Context, args ...struct{}) ([]byte, error) {
+		return BilibiliLiveCacheInitFunc(ctx, movie, args...)
+	}
+}
+
+func genBilibiliLiveM3U8ListFile(urls []*bilibili.LiveStream) []byte {
+	buf := bytes.NewBuffer(nil)
+	buf.WriteString("#EXTM3U\n")
+	buf.WriteString("#EXT-X-VERSION:3\n")
+	for _, v := range urls {
+		if len(v.Urls) == 0 {
+			continue
+		}
+		buf.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,NAME=\"%s\"\n", 1920*1080*v.Quality, v.Desc))
+		buf.WriteString(v.Urls[0] + "\n")
+	}
+	return buf.Bytes()
+}
+
+func BilibiliLiveCacheInitFunc(ctx context.Context, movie *model.Movie, args ...struct{}) ([]byte, error) {
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
+	resp, err := cli.GetLiveStreams(ctx, &bilibili.GetLiveStreamsReq{
+		Cid: movie.MovieBase.VendorInfo.Bilibili.Cid,
+		Hls: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return genBilibiliLiveM3U8ListFile(resp.LiveStreams), nil
+}
+
 type BilibiliMovieCache struct {
 	NoSharedMovie *MapCache[string, *BilibiliUserCache]
 	SharedMpd     *refreshcache.RefreshCache[*BilibiliMpdCache, *BilibiliUserCache]
 	Subtitle      *refreshcache.RefreshCache[BilibiliSubtitleCache, *BilibiliUserCache]
+	Live          *refreshcache.RefreshCache[[]byte, struct{}]
 }
 
 func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
@@ -307,6 +371,7 @@ func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
 		NoSharedMovie: newMapCache(NewBilibiliNoSharedMovieCacheInitFunc(movie), time.Minute*60),
 		SharedMpd:     refreshcache.NewRefreshCache(NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*60),
 		Subtitle:      refreshcache.NewRefreshCache(NewBilibiliSubtitleCacheInitFunc(movie), 0),
+		Live:          refreshcache.NewRefreshCache(NewBilibiliLiveCacheInitFunc(movie), time.Minute*55),
 	}
 }
 

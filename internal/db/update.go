@@ -15,14 +15,15 @@ type dbVersion struct {
 	Upgrade     func(*gorm.DB) error
 }
 
-const CurrentVersion = "0.0.4"
+const CurrentVersion = "0.0.9"
 
 var models = []any{
 	new(model.Setting),
 	new(model.User),
 	new(model.UserProvider),
 	new(model.Room),
-	new(model.RoomUserRelation),
+	new(model.RoomSettings),
+	new(model.RoomMember),
 	new(model.Movie),
 	new(model.BilibiliVendor),
 	new(model.AlistVendor),
@@ -33,7 +34,6 @@ var models = []any{
 var dbVersions = map[string]dbVersion{
 	"0.0.1": {
 		NextVersion: "0.0.2",
-		Upgrade:     nil,
 	},
 	"0.0.2": {
 		NextVersion: "0.0.3",
@@ -53,6 +53,26 @@ var dbVersions = map[string]dbVersion{
 		NextVersion: "0.0.4",
 	},
 	"0.0.4": {
+		NextVersion: "0.0.5",
+	},
+	"0.0.5": {
+		NextVersion: "0.0.6",
+	},
+	"0.0.6": {
+		NextVersion: "0.0.7",
+		Upgrade: func(d *gorm.DB) error {
+			// delete all emby vendors records
+			_ = d.Exec("DELETE FROM emby_vendors").Error
+			return nil
+		},
+	},
+	"0.0.7": {
+		NextVersion: "0.0.8",
+	},
+	"0.0.8": {
+		NextVersion: "0.0.9",
+	},
+	"0.0.9": {
 		NextVersion: "",
 	},
 }
@@ -72,7 +92,7 @@ func UpgradeDatabase() error {
 		return err
 	}
 	currentVersion := setting.Value
-	if flags.ForceAutoMigrate || currentVersion != CurrentVersion {
+	if flags.Global.ForceAutoMigrate || currentVersion != CurrentVersion {
 		err = autoMigrate(models...)
 		if err != nil {
 			log.Fatalf("failed to auto migrate: %s", err.Error())

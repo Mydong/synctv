@@ -1,4 +1,4 @@
-From alpine:latest as builder
+FROM alpine:latest as builder
 
 ARG VERSION=dev
 
@@ -13,9 +13,10 @@ COPY ./ ./
 RUN apk add --no-cache bash curl git go g++
 
 RUN bash script/build.sh -Mv ${VERSION} \
-    -f "gcc -static" -F "g++ -static"
+    -f 'gcc -static' -F 'g++ -static' \
+    -m '-a -v'
 
-From alpine:latest
+FROM alpine:latest
 
 ENV PUID=0 PGID=0 UMASK=022
 

@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/public"
-	"github.com/synctv-org/synctv/server/middlewares"
 )
 
 func Init(e *gin.Engine) {
@@ -20,10 +20,11 @@ func Init(e *gin.Engine) {
 
 	web := e.Group("/web")
 
-	if flags.WebPath == "" {
-		web.Use(middlewares.NewDistCacheControl("/web/"))
-
-		SiglePageAppFS(web, public.Public, true)
+	if flags.Server.WebPath == "" {
+		err := SiglePageAppFS(web, public.Public, true)
+		if err != nil {
+			log.Fatalf("failed to init fs router: %v", err)
+		}
 
 		// err := initFSRouter(web, public.Public.(fs.ReadDirFS), ".")
 		// if err != nil {
@@ -37,7 +38,10 @@ func Init(e *gin.Engine) {
 		// 	}
 		// })
 	} else {
-		SiglePageAppFS(web, os.DirFS(flags.WebPath), false)
+		err := SiglePageAppFS(web, os.DirFS(flags.Server.WebPath), false)
+		if err != nil {
+			log.Fatalf("failed to init fs router: %v", err)
+		}
 
 		// web.Static("/", flags.WebPath)
 

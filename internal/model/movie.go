@@ -1,6 +1,7 @@
 package model
 
 import (
+	"database/sql/driver"
 	"fmt"
 	"strings"
 	"time"
@@ -16,7 +17,21 @@ type Movie struct {
 	Position  uint      `gorm:"not null" json:"-"`
 	RoomID    string    `gorm:"not null;index;type:char(32)" json:"-"`
 	CreatorID string    `gorm:"index;type:char(32)" json:"creatorId"`
-	Base      BaseMovie `gorm:"embedded;embeddedPrefix:base_" json:"base"`
+	MovieBase `gorm:"embedded;embeddedPrefix:base_" json:"base"`
+	Children  []*Movie `gorm:"foreignKey:ParentID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+}
+
+func (m *Movie) Clone() *Movie {
+	return &Movie{
+		ID:        m.ID,
+		CreatedAt: m.CreatedAt,
+		UpdatedAt: m.UpdatedAt,
+		Position:  m.Position,
+		RoomID:    m.RoomID,
+		CreatorID: m.CreatorID,
+		MovieBase: *m.MovieBase.Clone(),
+		Children:  m.Children,
+	}
 }
 
 func (m *Movie) BeforeCreate(tx *gorm.DB) error {
@@ -26,16 +41,113 @@ func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-type BaseMovie struct {
-	Url        string               `gorm:"type:varchar(8192)" json:"url"`
-	Name       string               `gorm:"not null;type:varchar(256)" json:"name"`
-	Live       bool                 `json:"live"`
-	Proxy      bool                 `json:"proxy"`
-	RtmpSource bool                 `json:"rtmpSource"`
-	Type       string               `json:"type"`
-	Headers    map[string]string    `gorm:"serializer:fastjson;type:text" json:"headers"`
-	Subtitles  map[string]*Subtitle `gorm:"serializer:fastjson;type:text" json:"subtitles"`
-	VendorInfo VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
+func (m *Movie) BeforeSave(tx *gorm.DB) (err error) {
+	if m.ParentID != "" {
+		mv := &Movie{}
+		err = tx.Where("id = ?", m.ParentID).First(mv).Error
+		if err != nil {
+			return fmt.Errorf("load parent movie failed: %w", err)
+		}
+		if !mv.IsFolder {
+			return fmt.Errorf("parent is not a folder")
+		}
+		if mv.IsDynamicFolder() {
+			return fmt.Errorf("parent is a dynamic folder, cannot add child")
+		}
+	}
+	return
+}
+
+type MoreSource struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Url  string `json:"url"`
+}
+
+type MovieBase struct {
+	Url         string               `gorm:"type:varchar(8192)" json:"url"`
+	MoreSources []*MoreSource        `gorm:"serializer:fastjson;type:text" json:"moreSources,omitempty"`
+	Name        string               `gorm:"not null;type:varchar(256)" json:"name"`
+	Live        bool                 `json:"live"`
+	Proxy       bool                 `json:"proxy"`
+	RtmpSource  bool                 `json:"rtmpSource"`
+	Type        string               `json:"type"`
+	Headers     map[string]string    `gorm:"serializer:fastjson;type:text" json:"headers,omitempty"`
+	Subtitles   map[string]*Subtitle `gorm:"serializer:fastjson;type:text" json:"subtitles,omitempty"`
+	VendorInfo  VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
+	IsFolder    bool                 `json:"isFolder"`
+	ParentID    EmptyNullString      `gorm:"type:char(32)" json:"parentId"`
+}
+
+func (m *MovieBase) Clone() *MovieBase {
+	mss := make([]*MoreSource, len(m.MoreSources))
+	for i, ms := range m.MoreSources {
+		mss[i] = &MoreSource{
+			Name: ms.Name,
+			Type: ms.Type,
+			Url:  ms.Url,
+		}
+	}
+	hds := make(map[string]string, len(m.Headers))
+	for k, v := range m.Headers {
+		hds[k] = v
+	}
+	sbs := make(map[string]*Subtitle, len(m.Subtitles))
+	for k, v := range m.Subtitles {
+		sbs[k] = &Subtitle{
+			URL:  v.URL,
+			Type: v.Type,
+		}
+	}
+	return &MovieBase{
+		Url:         m.Url,
+		MoreSources: mss,
+		Name:        m.Name,
+		Live:        m.Live,
+		Proxy:       m.Proxy,
+		RtmpSource:  m.RtmpSource,
+		Type:        m.Type,
+		Headers:     hds,
+		Subtitles:   sbs,
+		VendorInfo:  m.VendorInfo,
+		IsFolder:    m.IsFolder,
+		ParentID:    m.ParentID,
+	}
+}
+
+func (m *MovieBase) IsDynamicFolder() bool {
+	return m.IsFolder && m.VendorInfo.Vendor != ""
+}
+
+type EmptyNullString string
+
+func (ns EmptyNullString) String() string {
+	return string(ns)
+}
+
+// Scan implements the [Scanner] interface.
+func (ns *EmptyNullString) Scan(value any) error {
+	if value == nil {
+		*ns = ""
+		return nil
+	}
+	switch v := value.(type) {
+	case []byte:
+		*ns = EmptyNullString(v)
+	case string:
+		*ns = EmptyNullString(v)
+	default:
+		return fmt.Errorf("unsupported type: %T", v)
+	}
+	return nil
+}
+
+// Value implements the [driver.Valuer] interface.
+func (ns EmptyNullString) Value() (driver.Value, error) {
+	if ns == "" {
+		return nil, nil
+	}
+	return string(ns), nil
 }
 
 type Subtitle struct {
@@ -78,6 +190,8 @@ func (b *BilibiliStreamingInfo) Validate() error {
 		if b.Cid == 0 {
 			return fmt.Errorf("cid is empty")
 		}
+	case b.Cid != 0: // live
+		return nil
 	default:
 		return fmt.Errorf("bvid or epid is empty")
 	}
@@ -97,6 +211,28 @@ func GetAlistServerIdFromPath(path string) (serverID string, filePath string, er
 		return "", path, fmt.Errorf("path is invalid")
 	}
 	return before, after, nil
+}
+
+func FormatAlistPath(serverID, filePath string) string {
+	return fmt.Sprintf("%s/%s", serverID, strings.Trim(filePath, "/"))
+}
+
+func (a *AlistStreamingInfo) SetServerIDAndFilePath(serverID, filePath string) {
+	a.Path = FormatAlistPath(serverID, filePath)
+}
+
+func (a *AlistStreamingInfo) ServerID() (string, error) {
+	serverID, _, err := GetAlistServerIdFromPath(a.Path)
+	return serverID, err
+}
+
+func (a *AlistStreamingInfo) FilePath() (string, error) {
+	_, filePath, err := GetAlistServerIdFromPath(a.Path)
+	return filePath, err
+}
+
+func (a *AlistStreamingInfo) ServerIDAndFilePath() (serverID, filePath string, err error) {
+	return GetAlistServerIdFromPath(a.Path)
 }
 
 func (a *AlistStreamingInfo) Validate() error {
@@ -134,7 +270,8 @@ func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
 
 type EmbyStreamingInfo struct {
 	// {/}serverId/ItemId
-	Path string `gorm:"type:varchar(52)" json:"path,omitempty"`
+	Path      string `gorm:"type:varchar(52)" json:"path,omitempty"`
+	Transcode bool   `json:"transcode,omitempty"`
 }
 
 func GetEmbyServerIdFromPath(path string) (serverID string, filePath string, err error) {
@@ -142,6 +279,28 @@ func GetEmbyServerIdFromPath(path string) (serverID string, filePath string, err
 		return s[0], s[1], nil
 	}
 	return "", path, fmt.Errorf("path is invalid")
+}
+
+func FormatEmbyPath(serverID, filePath string) string {
+	return fmt.Sprintf("%s/%s", serverID, filePath)
+}
+
+func (e *EmbyStreamingInfo) SetServerIDAndFilePath(serverID, filePath string) {
+	e.Path = FormatEmbyPath(serverID, filePath)
+}
+
+func (e *EmbyStreamingInfo) ServerID() (string, error) {
+	serverID, _, err := GetEmbyServerIdFromPath(e.Path)
+	return serverID, err
+}
+
+func (e *EmbyStreamingInfo) FilePath() (string, error) {
+	_, filePath, err := GetEmbyServerIdFromPath(e.Path)
+	return filePath, err
+}
+
+func (e *EmbyStreamingInfo) ServerIDAndFilePath() (serverID, filePath string, err error) {
+	return GetEmbyServerIdFromPath(e.Path)
 }
 
 func (e *EmbyStreamingInfo) Validate() error {

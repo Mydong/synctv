@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	pb "github.com/synctv-org/synctv/proto/message"
 	"github.com/synctv-org/synctv/server/middlewares"
@@ -133,7 +136,7 @@ func handleReaderMessage(c *op.Client, l *logrus.Entry) error {
 		}
 
 		l.Debugf("ws: receive message: %v", msg.String())
-		if err = handleElementMsg(c, &msg, l); err != nil {
+		if err = handleElementMsg(c, &msg); err != nil {
 			l.Errorf("ws: handle message error: %v", err)
 			return err
 		}
@@ -142,7 +145,7 @@ func handleReaderMessage(c *op.Client, l *logrus.Entry) error {
 
 const MaxChatMessageLength = 4096
 
-func handleElementMsg(cli *op.Client, msg *pb.ElementMessage, l *logrus.Entry) error {
+func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 	var timeDiff float64
 	if msg.Time != 0 {
 		timeDiff = time.Since(time.UnixMilli(msg.Time)).Seconds()
@@ -163,20 +166,24 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage, l *logrus.Entry) e
 				Error: "message too long",
 			})
 		}
-		return cli.Broadcast(&pb.ElementMessage{
-			Type: pb.ElementMessageType_CHAT_MESSAGE,
-			ChatResp: &pb.ChatResp{
-				Sender: &pb.Sender{
-					Username: cli.User().Username,
-					Userid:   cli.User().ID,
-				},
-				Message: message,
-			},
-		})
+		err := cli.SendChatMessage(message)
+		if err != nil && errors.Is(err, dbModel.ErrNoPermission) {
+			return cli.Send(&pb.ElementMessage{
+				Type:  pb.ElementMessageType_ERROR,
+				Error: fmt.Sprintf("send chat message error: %v", err),
+			})
+		}
+		return err
 	case pb.ElementMessageType_PLAY,
 		pb.ElementMessageType_PAUSE,
 		pb.ElementMessageType_CHANGE_RATE:
-		status := cli.Room().SetStatus(msg.ChangeMovieStatusReq.Playing, msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
+		status, err := cli.SetStatus(msg.ChangeMovieStatusReq.Playing, msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
+		if err != nil {
+			return cli.Send(&pb.ElementMessage{
+				Type:  pb.ElementMessageType_ERROR,
+				Error: fmt.Sprintf("set status error: %v", err),
+			})
+		}
 		return cli.Broadcast(&pb.ElementMessage{
 			Type: msg.Type,
 			MovieStatusChanged: &pb.MovieStatusChanged{
@@ -192,7 +199,13 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage, l *logrus.Entry) e
 			},
 		}, op.WithIgnoreClient(cli))
 	case pb.ElementMessageType_CHANGE_SEEK:
-		status := cli.Room().SetSeekRate(msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
+		status, err := cli.SetSeekRate(msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
+		if err != nil {
+			return cli.Send(&pb.ElementMessage{
+				Type:  pb.ElementMessageType_ERROR,
+				Error: fmt.Sprintf("set seek rate error: %v", err),
+			})
+		}
 		return cli.Broadcast(&pb.ElementMessage{
 			Type: msg.Type,
 			MovieStatusChanged: &pb.MovieStatusChanged{
@@ -223,27 +236,26 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage, l *logrus.Entry) e
 				},
 			},
 		})
-	case pb.ElementMessageType_CHECK:
+	case pb.ElementMessageType_CHECK_EXPIRED:
 		current := cli.Room().Current()
-		if msg.CheckReq.ExpireId != 0 {
+		if msg.ExpireId != 0 && current.Movie.ID != "" {
 			currentMovie, err := cli.Room().GetMovieByID(current.Movie.ID)
 			if err != nil {
-				_ = cli.Send(&pb.ElementMessage{
+				return cli.Send(&pb.ElementMessage{
 					Type:  pb.ElementMessageType_ERROR,
-					Error: err.Error(),
+					Error: fmt.Sprintf("get movie by id error: %v", err),
 				})
-				break
 			}
-			if currentMovie.CheckExpired(msg.CheckReq.ExpireId) {
-				_ = cli.Send(&pb.ElementMessage{
-					Type: pb.ElementMessageType_CURRENT_CHANGED,
+			if currentMovie.CheckExpired(msg.ExpireId) {
+				return cli.Send(&pb.ElementMessage{
+					Type: pb.ElementMessageType_CURRENT_EXPIRED,
 				})
-				break
 			}
 		}
+	case pb.ElementMessageType_CHECK_STATUS:
+		current := cli.Room().Current()
 		status := current.Status
-		cliStatus := msg.CheckReq.Status
-		if status.Seek+maxInterval < cliStatus.Seek+timeDiff {
+		if status.Seek+maxInterval < msg.CheckStatusReq.Seek+timeDiff {
 			return cli.Send(&pb.ElementMessage{
 				Type: pb.ElementMessageType_TOO_FAST,
 				MovieStatusChanged: &pb.MovieStatusChanged{
@@ -254,7 +266,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage, l *logrus.Entry) e
 					},
 				},
 			})
-		} else if status.Seek-maxInterval > cliStatus.Seek+timeDiff {
+		} else if status.Seek-maxInterval > msg.CheckStatusReq.Seek+timeDiff {
 			return cli.Send(&pb.ElementMessage{
 				Type: pb.ElementMessageType_TOO_SLOW,
 				MovieStatusChanged: &pb.MovieStatusChanged{

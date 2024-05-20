@@ -1,19 +1,21 @@
 package op
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"net/http"
 	"net/url"
 	"sync/atomic"
 	"time"
 
-	"github.com/go-resty/resty/v2"
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/go-uhc"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
 	"github.com/zijiren233/livelib/protocol/hls"
@@ -23,40 +25,51 @@ import (
 )
 
 type Movie struct {
-	model.Movie
+	*model.Movie
 	channel       atomic.Pointer[rtmps.Channel]
 	alistCache    atomic.Pointer[cache.AlistMovieCache]
 	bilibiliCache atomic.Pointer[cache.BilibiliMovieCache]
 	embyCache     atomic.Pointer[cache.EmbyMovieCache]
+	subPath       string
+}
+
+func (m *Movie) SubPath() string {
+	return m.subPath
 }
 
 func (m *Movie) ExpireId() uint64 {
+	if m.IsFolder {
+		return 0
+	}
 	switch {
-	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist:
+	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
 			return uint64(m.AlistCache().Last())
 		}
-		fallthrough
-	default:
-		return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
+	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
+		return uint64(m.BilibiliCache().Live.Last())
 	}
+	return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
 }
 
 func (m *Movie) CheckExpired(expireId uint64) bool {
+	if m.IsFolder {
+		return false
+	}
 	switch {
-	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist:
+	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
 			return time.Now().UnixNano()-int64(expireId) > m.AlistCache().MaxAge()
 		}
-		fallthrough
-	default:
-		return expireId != m.ExpireId()
+	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
+		return time.Now().UnixNano()-int64(expireId) > m.BilibiliCache().Live.MaxAge()
 	}
+	return expireId != m.ExpireId()
 }
 
-func (m *Movie) ClearCache() {
+func (m *Movie) ClearCache() error {
 	m.alistCache.Store(nil)
 
 	bmc := m.bilibiliCache.Swap(nil)
@@ -64,13 +77,25 @@ func (m *Movie) ClearCache() {
 		bmc.NoSharedMovie.Clear()
 	}
 
-	m.embyCache.Store(nil)
+	emc := m.embyCache.Swap(nil)
+	if emc != nil {
+		u, err := LoadOrInitUserByID(m.CreatorID)
+		if err != nil {
+			return err
+		}
+		err = emc.Clear(context.Background(), u.Value().EmbyCache())
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (m *Movie) AlistCache() *cache.AlistMovieCache {
 	c := m.alistCache.Load()
 	if c == nil {
-		c = cache.NewAlistMovieCache(&m.Movie)
+		c = cache.NewAlistMovieCache(m.Movie, m.subPath)
 		if !m.alistCache.CompareAndSwap(nil, c) {
 			return m.AlistCache()
 		}
@@ -81,7 +106,7 @@ func (m *Movie) AlistCache() *cache.AlistMovieCache {
 func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
 	c := m.bilibiliCache.Load()
 	if c == nil {
-		c = cache.NewBilibiliMovieCache(&m.Movie)
+		c = cache.NewBilibiliMovieCache(m.Movie)
 		if !m.bilibiliCache.CompareAndSwap(nil, c) {
 			return m.BilibiliCache()
 		}
@@ -92,7 +117,7 @@ func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
 func (m *Movie) EmbyCache() *cache.EmbyMovieCache {
 	c := m.embyCache.Load()
 	if c == nil {
-		c = cache.NewEmbyMovieCache(&m.Movie)
+		c = cache.NewEmbyMovieCache(m.Movie, m.subPath)
 		if !m.embyCache.CompareAndSwap(nil, c) {
 			return m.EmbyCache()
 		}
@@ -101,6 +126,9 @@ func (m *Movie) EmbyCache() *cache.EmbyMovieCache {
 }
 
 func (m *Movie) Channel() (*rtmps.Channel, error) {
+	if m.IsFolder {
+		return nil, errors.New("this is a folder")
+	}
 	err := m.initChannel()
 	if err != nil {
 		return nil, err
@@ -126,10 +154,10 @@ func (m *Movie) compareAndSwapInitChannel() *rtmps.Channel {
 
 func (m *Movie) initChannel() error {
 	switch {
-	case m.Movie.Base.Live && m.Movie.Base.RtmpSource:
+	case m.Movie.MovieBase.Live && m.Movie.MovieBase.RtmpSource:
 		m.compareAndSwapInitChannel()
-	case m.Movie.Base.Live && m.Movie.Base.Proxy:
-		u, err := url.Parse(m.Movie.Base.Url)
+	case m.Movie.MovieBase.Live && m.Movie.MovieBase.Proxy:
+		u, err := url.Parse(m.Movie.MovieBase.Url)
 		if err != nil {
 			return err
 		}
@@ -146,7 +174,7 @@ func (m *Movie) initChannel() error {
 						return
 					}
 					cli := core.NewConnClient()
-					if err = cli.Start(m.Movie.Base.Url, av.PLAY); err != nil {
+					if err = cli.Start(m.Movie.MovieBase.Url, av.PLAY); err != nil {
 						cli.Close()
 						time.Sleep(time.Second)
 						continue
@@ -168,20 +196,26 @@ func (m *Movie) initChannel() error {
 					if c.Closed() {
 						return
 					}
-					r := resty.New().R()
-					for k, v := range m.Movie.Base.Headers {
-						r.SetHeader(k, v)
-					}
-					// r.SetHeader("User-Agent", UserAgent)
-					resp, err := r.Get(m.Movie.Base.Url)
+					req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, m.Movie.MovieBase.Url, nil)
 					if err != nil {
 						time.Sleep(time.Second)
 						continue
 					}
-					if err := c.PushStart(flv.NewReader(resp.RawBody())); err != nil {
+					for k, v := range m.Movie.MovieBase.Headers {
+						req.Header.Set(k, v)
+					}
+					if req.Header.Get("User-Agent") == "" {
+						req.Header.Set("User-Agent", utils.UA)
+					}
+					resp, err := uhc.Do(req)
+					if err != nil {
+						time.Sleep(time.Second)
+						continue
+					}
+					if err := c.PushStart(flv.NewReader(resp.Body)); err != nil {
 						time.Sleep(time.Second)
 					}
-					resp.RawBody().Close()
+					resp.Body.Close()
 				}
 			}()
 		default:
@@ -194,12 +228,15 @@ func (m *Movie) initChannel() error {
 }
 
 func (movie *Movie) Validate() error {
-	m := movie.Movie.Base
+	m := movie.Movie.MovieBase
 	if m.VendorInfo.Vendor != "" {
 		err := movie.validateVendorMovie()
 		if err != nil {
 			return err
 		}
+	}
+	if movie.IsFolder {
+		return nil
 	}
 	switch {
 	case m.RtmpSource && m.Proxy:
@@ -261,15 +298,18 @@ func (movie *Movie) Validate() error {
 }
 
 func (movie *Movie) validateVendorMovie() error {
-	switch movie.Movie.Base.VendorInfo.Vendor {
+	switch movie.Movie.MovieBase.VendorInfo.Vendor {
 	case model.VendorBilibili:
-		return movie.Movie.Base.VendorInfo.Bilibili.Validate()
+		if movie.IsFolder {
+			return errors.New("bilibili folder not support")
+		}
+		return movie.Movie.MovieBase.VendorInfo.Bilibili.Validate()
 
 	case model.VendorAlist:
-		return movie.Movie.Base.VendorInfo.Alist.Validate()
+		return movie.Movie.MovieBase.VendorInfo.Alist.Validate()
 
 	case model.VendorEmby:
-		return movie.Movie.Base.VendorInfo.Emby.Validate()
+		return movie.Movie.MovieBase.VendorInfo.Emby.Validate()
 
 	default:
 		return fmt.Errorf("vendor not implement validate")
@@ -277,6 +317,9 @@ func (movie *Movie) validateVendorMovie() error {
 }
 
 func (m *Movie) Terminate() error {
+	if m.IsFolder {
+		return nil
+	}
 	c := m.channel.Swap(nil)
 	if c != nil {
 		err := c.Close()
@@ -287,8 +330,14 @@ func (m *Movie) Terminate() error {
 	return nil
 }
 
-func (m *Movie) Update(movie *model.BaseMovie) error {
-	m.Movie.Base = *movie
-	m.ClearCache()
-	return m.Terminate()
+func (m *Movie) Close() error {
+	err := m.Terminate()
+	if err != nil {
+		return err
+	}
+	err = m.ClearCache()
+	if err != nil {
+		return err
+	}
+	return nil
 }
