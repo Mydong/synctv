@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
@@ -81,18 +82,9 @@ func (r *Room) CheckVersion(version uint32) bool {
 }
 
 func (r *Room) UpdateMovie(movieId string, movie *model.MovieBase) error {
-	cid := r.current.current.Movie.ID
-	if cid != "" {
-		if cid == movieId {
-			return errors.New("cannot update current movie")
-		}
-		ok, err := r.IsParentOf(cid, movieId)
-		if err != nil {
-			return fmt.Errorf("check parent failed: %w", err)
-		}
-		if ok {
-			return errors.New("cannot update current movie's parent")
-		}
+	err := r.checkCanModifyMovie(movieId)
+	if err != nil {
+		return err
 	}
 	return r.movies.Update(movieId, movie)
 }
@@ -327,48 +319,68 @@ func (r *Room) SetPassword(password string) error {
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
 }
 
-func (r *Room) IsParentOf(movieID, parentID string) (bool, error) {
-	if parentID == "" {
-		return true, nil
-	}
-	return r.movies.IsParentOf(movieID, parentID)
-}
-
-func (r *Room) DeleteMovieByID(id string) error {
+func (r *Room) checkCanModifyMovie(id string) error {
 	if id == "" {
-		return errors.New("movie id is nil")
+		if r.current.current.Movie.ID != "" {
+			return errors.New("cannot modify current movie")
+		}
+		return nil
 	}
 	cid := r.current.current.Movie.ID
 	if cid != "" {
 		if cid == id {
-			return errors.New("cannot delete current movie")
+			return errors.New("cannot modify current movie")
 		}
-		ok, err := r.IsParentOf(cid, id)
+		ok, err := r.movies.IsParentFolder(cid, id)
 		if err != nil {
 			return fmt.Errorf("check parent failed: %w", err)
 		}
 		if ok {
-			return errors.New("cannot delete current movie's parent")
+			return errors.New("cannot modify current movie's parent")
 		}
+	}
+	return nil
+}
+
+func (r *Room) checkCanModifyMovies(ids []string) error {
+	if len(ids) == 0 {
+		return errors.New("ids is nil")
+	}
+	cid := r.current.current.Movie.ID
+	for _, id := range ids {
+		if id == "" {
+			if cid != "" {
+				return errors.New("cannot modify current movie")
+			}
+		}
+		if cid != "" {
+			if id == cid {
+				return errors.New("cannot modify current movie")
+			}
+			ok, err := r.movies.IsParentFolder(cid, id)
+			if err != nil {
+				return fmt.Errorf("check parent failed: %w", err)
+			}
+			if ok {
+				return errors.New("cannot modify current movie's parent")
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Room) DeleteMovieByID(id string) error {
+	err := r.checkCanModifyMovie(id)
+	if err != nil {
+		return err
 	}
 	return r.movies.DeleteMovieByID(id)
 }
 
 func (r *Room) DeleteMoviesByID(ids []string) error {
-	cid := r.current.current.Movie.ID
-	if cid != "" {
-		for _, id := range ids {
-			if id == cid {
-				return errors.New("cannot delete current movie")
-			}
-			ok, err := r.IsParentOf(cid, id)
-			if err != nil {
-				return fmt.Errorf("check parent failed: %w", err)
-			}
-			if ok {
-				return errors.New("cannot delete current movie's parent")
-			}
-		}
+	err := r.checkCanModifyMovies(ids)
+	if err != nil {
+		return err
 	}
 	return r.movies.DeleteMoviesByID(ids)
 }
@@ -378,15 +390,9 @@ func (r *Room) ClearMovies() error {
 }
 
 func (r *Room) ClearMoviesByParentID(parentID string) error {
-	cid := r.current.current.Movie.ID
-	if cid != "" {
-		ok, err := r.IsParentOf(cid, parentID)
-		if err != nil {
-			return fmt.Errorf("check parent failed: %w", err)
-		}
-		if ok {
-			return errors.New("cannot delete current movie's parent")
-		}
+	err := r.checkCanModifyMovie(parentID)
+	if err != nil {
+		return err
 	}
 	return r.movies.DeleteMovieByParentID(parentID)
 }
@@ -429,7 +435,14 @@ func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error 
 			return err
 		}
 	} else {
-		_ = currentMovie.ClearCache()
+		if currentMovie.Proxy {
+			err = currentMovie.Close()
+		} else {
+			err = currentMovie.ClearCache()
+		}
+		if err != nil {
+			logrus.Errorf("clear current movie cache failed: %v", err)
+		}
 	}
 	if movieID == "" {
 		r.current.SetMovie(CurrentMovie{}, false)
@@ -501,17 +514,20 @@ func (r *Room) SetSettings(settings *model.RoomSettings) error {
 	if err != nil {
 		return err
 	}
-	r.Settings = settings
-	if settings.DisableGuest {
-		return r.KickUser(db.GuestUserID)
-	}
-	return nil
+	return r.afterUpdateSettings(settings)
 }
 
 func (r *Room) UpdateSettings(settings map[string]any) error {
 	rs, err := db.UpdateRoomSettings(r.ID, settings)
 	if err != nil {
 		return err
+	}
+	return r.afterUpdateSettings(rs)
+}
+
+func (r *Room) afterUpdateSettings(rs *model.RoomSettings) error {
+	if r.Settings.GuestPermissions != rs.GuestPermissions {
+		r.members.Delete(db.GuestUserID)
 	}
 	r.Settings = rs
 	if rs.DisableGuest {
