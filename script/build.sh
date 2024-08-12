@@ -24,7 +24,8 @@ readonly DEFAULT_CXX="g++"
 readonly DEFAULT_CGO_CROSS_COMPILER_DIR="${DEFAULT_SOURCE_DIR}/cross"
 readonly DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
 readonly DEFAULT_CGO_LDFLAGS="-s"
-readonly DEFAULT_LDFLAGS="-s -w"
+readonly DEFAULT_LDFLAGS="-s -w -linkmode auto"
+readonly DEFAULT_EXT_LDFLAGS="-static"
 readonly DEFAULT_CGO_DEPS_VERSION="v0.4.6"
 readonly DEFAULT_TTY_WIDTH="40"
 
@@ -86,6 +87,7 @@ function printHelp() {
     echo -e "  ${COLOR_LIGHT_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}     - Pass additional arguments to the 'go build' command."
     echo -e "  ${COLOR_LIGHT_BLUE}--disable-micro${COLOR_RESET}                - Disable building micro architecture variants."
     echo -e "  ${COLOR_LIGHT_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")."
+    echo -e "  ${COLOR_LIGHT_BLUE}--ext-ldflags='<flags>'${COLOR_RESET}          - Set external linker flags (default: \"${DEFAULT_EXT_LDFLAGS}\")."
     echo -e "  ${COLOR_LIGHT_BLUE}-p=<platforms>, --platforms=<platforms>${COLOR_RESET} - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
     echo -e "  ${COLOR_LIGHT_BLUE}--result-dir=<dir>${COLOR_RESET}               - Specify the build result directory (default: ${DEFAULT_RESULT_DIR})."
     echo -e "  ${COLOR_LIGHT_BLUE}--tags='<tags>'${COLOR_RESET}                - Set build tags."
@@ -120,7 +122,7 @@ function setDefault() {
 # Arguments:
 #   $1: Tags to append.
 function addTags() {
-    [[ -n "${1}" ]] && TAGS="${TAGS} ${1}" || true
+    TAGS="$(echo "$TAGS $@" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
 }
 
 # Appends linker flags to the LDFLAGS variable.
@@ -128,6 +130,10 @@ function addTags() {
 #   $1: Linker flags to append.
 function addLDFLAGS() {
     [[ -n "${1}" ]] && LDFLAGS="${LDFLAGS} ${1}" || true
+}
+
+function addExtLDFLAGS() {
+    [[ -n "${1}" ]] && EXT_LDFLAGS="${EXT_LDFLAGS} ${1}" || true
 }
 
 # Appends build arguments to the BUILD_ARGS variable.
@@ -162,6 +168,7 @@ function fixArgs() {
     setDefault "GH_PROXY" ""
     setDefault "TAGS" ""
     setDefault "LDFLAGS" "${DEFAULT_LDFLAGS}"
+    setDefault "EXT_LDFLAGS" "${DEFAULT_EXT_LDFLAGS}"
     setDefault "BUILD_ARGS" ""
     setDefault "CGO_DEPS_VERSION" "${DEFAULT_CGO_DEPS_VERSION}"
     setDefault "CGO_FLAGS" "${DEFAULT_CGO_FLAGS}"
@@ -188,7 +195,7 @@ function downloadAndUnzip() {
 
     mkdir -p "${file}"
     file="$(cd "${file}" && pwd)"
-    echo -e "${COLOR_LIGHT_BLUE}Downloading ${COLOR_LIGHT_CYAN}\"${url}\"${COLOR_LIGHT_BLUE} to ${COLOR_LIGHT_GREEN}\"${file}\"${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_BLUE}Downloading ${COLOR_LIGHT_CYAN}\"${url}\"${COLOR_LIGHT_BLUE} to ${COLOR_LIGHT_CYAN}\"${file}\"${COLOR_RESET}"
     rm -rf "${file}"/*
 
     local start_time=$(date +%s)
@@ -213,7 +220,7 @@ function downloadAndUnzip() {
         ;;
     *)
         echo -e "${COLOR_LIGHT_RED}Unsupported compression type: ${type}${COLOR_RESET}"
-        return 1
+        return 2
         ;;
     esac
 
@@ -239,48 +246,36 @@ function removeDuplicatePlatforms() {
 # Adds platforms to the allowed platforms list.
 # Arguments:
 #   $1: Comma-separated list of platforms to add.
-function addToAllowedPlatforms() {
+function addAllowedPlatforms() {
     [[ -z "$ALLOWED_PLATFORMS" ]] && ALLOWED_PLATFORMS="$1" || ALLOWED_PLATFORMS=$(removeDuplicatePlatforms "$ALLOWED_PLATFORMS,$1")
-}
-
-# Adds platforms to the CGO allowed platforms list.
-# Arguments:
-#   $1: Comma-separated list of platforms to add.
-function addToCGOAllowedPlatforms() {
-    [[ -z "$CGO_ALLOWED_PLATFORMS" ]] && CGO_ALLOWED_PLATFORMS="$1" || CGO_ALLOWED_PLATFORMS=$(removeDuplicatePlatforms "$CGO_ALLOWED_PLATFORMS,$1")
 }
 
 # Removes platforms from the allowed platforms list.
 # Arguments:
 #   $1: Comma-separated list of platforms to remove.
-function deleteFromAllowedPlatforms() {
+function deleteAllowedPlatforms() {
     ALLOWED_PLATFORMS=$(echo "${ALLOWED_PLATFORMS}" | sed "s|${1}$||g" | sed "s|${1},||g")
 }
 
-# Removes platforms from the CGO allowed platforms list.
-# Arguments:
-#   $1: Comma-separated list of platforms to remove.
-function deleteFromCGOAllowedPlatforms() {
-    CGO_ALLOWED_PLATFORMS=$(echo "${CGO_ALLOWED_PLATFORMS}" | sed "s|${1}$||g" | sed "s|${1},||g")
+# Clears the allowed platforms list.
+function clearAllowedPlatforms() {
+    ALLOWED_PLATFORMS=""
 }
 
-addToAllowedPlatforms "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
-addToAllowedPlatforms "darwin/amd64,darwin/arm64"
-addToAllowedPlatforms "windows/386,windows/amd64,windows/arm,windows/arm64"
-
-addToCGOAllowedPlatforms "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
-addToCGOAllowedPlatforms "windows/386,windows/amd64"
-
-addToAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
-addToCGOAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
-
 # Initializes the platforms based on environment variables and allowed platforms.
+# go tool dist list
 function initPlatforms() {
     setDefault "CGO_ENABLED" "${DEFAULT_CGO_ENABLED}"
 
-    unset -v CURRENT_ALLOWED_PLATFORMS
+    local distList="$(go tool dist list)"
+    addAllowedPlatforms "$(echo "$distList" | grep windows)"
+    addAllowedPlatforms "$(echo "$distList" | grep linux)"
+    addAllowedPlatforms "$(echo "$distList" | grep darwin)"
+    addAllowedPlatforms "$(echo "$distList" | grep netbsd)"
+    addAllowedPlatforms "$(echo "$distList" | grep freebsd)"
+    addAllowedPlatforms "$(echo "$distList" | grep openbsd)"
 
-    isCGOEnabled && CURRENT_ALLOWED_PLATFORMS="${CGO_ALLOWED_PLATFORMS}" || CURRENT_ALLOWED_PLATFORMS="${ALLOWED_PLATFORMS}"
+    addAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
 
     if declare -f initDepPlatforms >/dev/null; then
         initDepPlatforms
@@ -290,19 +285,15 @@ function initPlatforms() {
 # Checks if a platform is allowed.
 # Arguments:
 #   $1: Target platform to check.
-#   $2: Optional. List of allowed platforms. If not provided, CURRENT_ALLOWED_PLATFORMS is used.
+#   $2: Optional. List of allowed platforms. If not provided, ALLOWED_PLATFORMS is used.
 # Returns:
 #   0: Platform is allowed.
 #   1: Platform is not allowed.
-#   2: Platform is not allowed for CGO.
 function checkPlatform() {
     local target_platform="$1"
-    local current_allowed_platform="${2:-${CURRENT_ALLOWED_PLATFORMS}}"
 
-    if [[ "${current_allowed_platform}" =~ (^|,)${target_platform}($|,) ]]; then
+    if [[ "${ALLOWED_PLATFORMS}" =~ (^|,)${target_platform}($|,) ]]; then
         return 0
-    elif isCGOEnabled && [[ "${ALLOWED_PLATFORM}" =~ (^|,)${target_platform}($|,) ]]; then
-        return 2
     else
         return 1
     fi
@@ -314,7 +305,6 @@ function checkPlatform() {
 # Returns:
 #   0: All platforms are allowed.
 #   1: At least one platform is not allowed.
-#   2: At least one platform is not allowed for CGO.
 #   3: Error checking platforms.
 function checkPlatforms() {
     for platform in ${1//,/ }; do
@@ -328,10 +318,6 @@ function checkPlatforms() {
         1)
             echo -e "${COLOR_LIGHT_RED}Platform not supported: ${platform}${COLOR_RESET}"
             return 1
-            ;;
-        2)
-            echo -e "${COLOR_LIGHT_RED}Platform not supported for CGO: ${platform}${COLOR_RESET}"
-            return 2
             ;;
         *)
             echo -e "${COLOR_LIGHT_RED}Error checking platform: ${platform}${COLOR_RESET}"
@@ -359,7 +345,8 @@ function resetCGO() {
 #   $3: Optional. Micro architecture variant.
 # Returns:
 #   0: CGO dependencies initialized successfully.
-#   1: Error initializing CGO dependencies.
+#   1: CGO disabled.
+#   2: Error initializing CGO dependencies.
 function initCGODeps() {
     resetCGO
     local goos="$1"
@@ -372,11 +359,11 @@ function initCGODeps() {
         return 0
     elif [[ -n "${FORCE_CC}" ]] || [[ -n "${FORCE_CXX}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both FORCE_CC and FORCE_CXX must be set at the same time.${COLOR_RESET}"
-        return 1
+        return 2
     fi
 
     if ! isCGOEnabled; then
-        echo -e "${COLOR_LIGHT_RED}Try init CGO, but CGO is not enabled.${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_RED}CGO is globally disabled.${COLOR_RESET}"
         return 1
     fi
 
@@ -390,7 +377,7 @@ function initCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@"
             else
-                echo -e "${COLOR_LIGHT_ORANGE}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
                 return 1
             fi
             ;;
@@ -400,7 +387,7 @@ function initCGODeps() {
         if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
             initHostCGODeps "$@"
         else
-            echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
             return 1
         fi
         ;;
@@ -481,7 +468,9 @@ function initDefaultCGODeps() {
             initLinuxCGO "mips64el" "" "${micro}"
             ;;
         "ppc64")
-            initLinuxCGO "powerpc64" ""
+            # initLinuxCGO "powerpc64" ""
+            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+            return 1
             ;;
         "ppc64le")
             initLinuxCGO "powerpc64le" ""
@@ -499,7 +488,7 @@ function initDefaultCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@"
             else
-                echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
                 return 1
             fi
             ;;
@@ -517,7 +506,7 @@ function initDefaultCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@"
             else
-                echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
                 return 1
             fi
             ;;
@@ -527,7 +516,7 @@ function initDefaultCGODeps() {
         if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
             initHostCGODeps "$@"
         else
-            echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
             return 1
         fi
         ;;
@@ -564,7 +553,7 @@ function initLinuxCGO() {
         fi
     elif [[ -z "${!cc_var}" ]] || [[ -z "${!cxx_var}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
-        return 1
+        return 2
     fi
 
     CC="${!cc_var} -static --static"
@@ -598,7 +587,7 @@ function initWindowsCGO() {
         fi
     elif [[ -z "${!cc_var}" ]] || [[ -z "${!cxx_var}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
-        return 1
+        return 2
     fi
 
     CC="${!cc_var} -static --static"
@@ -614,13 +603,19 @@ function initWindowsCGO() {
 #   1: Platform does not support PIE.
 function supportPIE() {
     local platform="$1"
-    [ ! $(isCGOEnabled) ] &&
-        [[ "${platform}" != "linux/386" ]] &&
+    [[ "${platform}" != "linux/386" ]] &&
         [[ "${platform}" != "linux/arm" ]] &&
+        [[ "${platform}" != "linux/ppc64" ]] &&
+        [[ "${platform}" != "freebsd"* ]] &&
+        [[ "${platform}" != "netbsd"* ]] &&
+        [[ "${platform}" != "openbsd"* ]] &&
         [[ "${platform}" != "linux/loong64" ]] &&
         [[ "${platform}" != "linux/riscv64" ]] &&
-        [[ "${platform}" != "linux/s390x" ]] ||
-        return 1
+        [[ "${platform}" != "linux/s390x" ]]
+}
+
+function supportCgoPIE() {
+    local platform="$1"
     [[ "${platform}" != "linux/mips"* ]] &&
         [[ "${platform}" != "linux/ppc64" ]] &&
         [[ "${platform}" != "openbsd"* ]] &&
@@ -644,14 +639,15 @@ function printSeparator() {
 # Arguments:
 #   $1: Target platform (e.g., "linux/amd64").
 #   $2: Target name (e.g., binary name).
+# Ref:
+# https://go.dev/wiki/MinimumRequirements
+# https://go.dev/doc/install/source#environment
 function buildTarget() {
     local platform="$1"
     local goos="${platform%/*}"
     local goarch="${platform#*/}"
     local ext=""
     [[ "${goos}" == "windows" ]] && ext=".exe"
-    local build_mode=""
-    supportPIE "${platform}" && build_mode="-buildmode=pie"
 
     local build_env=(
         "GOOS=${goos}"
@@ -703,6 +699,8 @@ function buildTarget() {
         buildTargetWithMicro "power8" "${build_env[@]}"
         echo
         buildTargetWithMicro "power9" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "power10" "${build_env[@]}"
         ;;
     "wasm")
         echo
@@ -727,61 +725,71 @@ function buildTargetWithMicro() {
     local target_file="${RESULT_DIR}/${BIN_NAME}"
     [ -z "$BIN_NAME_NO_SUFFIX" ] && target_file="${target_file}-${goos}-${goarch}${micro:+"-$micro"}" || true
     target_file="${target_file}${ext}"
-
-    isCGOEnabled && build_env+=("CGO_ENABLED=1") || build_env+=("CGO_ENABLED=0")
+    local build_mode=""
 
     # Set micro architecture specific environment variables.
     case "${goarch}" in
     "386")
         build_env+=("GO386=${micro}")
-        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
         ;;
     "arm")
         build_env+=("GOARM=${micro}")
-        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro:-6}"
+        [ -z "$micro" ] && micro="6"
         ;;
     "amd64")
         build_env+=("GOAMD64=${micro}")
-        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
         ;;
     "mips" | "mipsle")
         build_env+=("GOMIPS=${micro}")
-        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro:-hardfloat}"
+        [ -z "$micro" ] && micro="hardfloat"
         ;;
     "mips64" | "mips64le")
         build_env+=("GOMIPS64=${micro}")
-        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro:-hardfloat}"
+        [ -z "$micro" ] && micro="hardfloat"
         ;;
     "ppc64" | "ppc64le")
         build_env+=("GOPPC64=${micro}")
-        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
         ;;
     "wasm")
         build_env+=("GOWASM=${micro}")
-        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
-        ;;
-    *)
-        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
         ;;
     esac
 
-    # Set CGO specific environment variables.
-    if isCGOEnabled; then
+    echo -e "${COLOR_LIGHT_MAGENTA}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
+
+    if initCGODeps "${goos}" "${goarch}" "${micro}"; then
+        code=0
+    else
+        code=$?
+    fi
+
+    case "$code" in
+    0)
+        build_env+=("CGO_ENABLED=1")
+        build_env+=("CC=${CC}")
+        build_env+=("CXX=${CXX}")
         build_env+=("CGO_CFLAGS=${CGO_FLAGS}${MORE_CGO_CFLAGS:+ ${MORE_CGO_CFLAGS}}")
         build_env+=("CGO_CXXFLAGS=${CGO_FLAGS}${MORE_CGO_CXXFLAGS:+ ${MORE_CGO_CXXFLAGS}}")
         build_env+=("CGO_LDFLAGS=${CGO_LDFLAGS}${MORE_CGO_LDFLAGS:+ ${MORE_CGO_LDFLAGS}}")
-        build_env+=("CC=${CC}")
-        build_env+=("CXX=${CXX}")
-    fi
+        supportCgoPIE "${platform}" && build_mode="-buildmode=pie"
+        ;;
+    1)
+        build_env+=("CGO_ENABLED=0")
+        supportPIE "${platform}" && build_mode="-buildmode=pie"
+        ;;
+    *)
+        echo -e "${COLOR_LIGHT_RED}Error initializing CGO dependencies.${COLOR_RESET}"
+        return 1
+        ;;
+    esac
 
-    echo -e "${COLOR_LIGHT_MAGENTA}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
     echo -e "${COLOR_LIGHT_BLUE}Run command:\n${COLOR_WHITE}$(for var in "${build_env[@]}"; do
         key=$(echo "${var}" | cut -d= -f1)
         value=$(echo "${var}" | cut -d= -f2-)
         echo "export ${key}='${value}'"
-    done)\n${COLOR_LIGHT_CYAN}go build -tags \"${TAGS}\" -ldflags \"${LDFLAGS}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
+    done)\n${COLOR_LIGHT_CYAN}go build -buildmode=exe -tags \"${TAGS}\" -ldflags \"${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
     local start_time=$(date +%s)
-    env "${build_env[@]}" go build -tags "${TAGS}" -ldflags "${LDFLAGS}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
+    env "${build_env[@]}" go build -buildmode=exe -tags "${TAGS}" -ldflags "${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
     local end_time=$(date +%s)
     echo -e "${COLOR_LIGHT_GREEN}Build successful: ${goos}/${goarch}${micro:+ ${micro}}  (took $((end_time - start_time))s)${COLOR_RESET}"
 }
@@ -797,17 +805,17 @@ function expandPlatforms() {
     local platform=""
     for platform in ${platforms//,/ }; do
         if [[ "${platform}" == "all" ]]; then
-            echo "${CURRENT_ALLOWED_PLATFORMS}"
+            echo "${ALLOWED_PLATFORMS}"
             return 0
         elif [[ "${platform}" == *\** ]]; then
             local tmp_var=""
-            for tmp_var in ${CURRENT_ALLOWED_PLATFORMS//,/ }; do
-                [[ "${tmp_var}" == ${platform} ]] && expanded_platforms="${expanded_platforms} ${tmp_var}"
+            for tmp_var in ${ALLOWED_PLATFORMS//,/ }; do
+                [[ "${tmp_var}" == ${platform} ]] && expanded_platforms="${expanded_platforms},${tmp_var}"
             done
         elif [[ "${platform}" != */* ]]; then
-            expanded_platforms="${expanded_platforms} $(expandPlatforms "${platform}/*")"
+            expanded_platforms="${expanded_platforms},$(expandPlatforms "${platform}/*")"
         else
-            expanded_platforms="${expanded_platforms} ${platform}"
+            expanded_platforms="${expanded_platforms},${platform}"
         fi
     done
     removeDuplicatePlatforms "${expanded_platforms}"
@@ -889,6 +897,9 @@ while [[ $# -gt 0 ]]; do
     --ldflags=*)
         addLDFLAGS "${1#*=}"
         ;;
+    --ext-ldflags=*)
+        addExtLDFLAGS "${1#*=}"
+        ;;
     -p=* | --platforms=*)
         PLATFORMS="${1#*=}"
         ;;
@@ -900,7 +911,12 @@ while [[ $# -gt 0 ]]; do
         ;;
     --show-all-platforms)
         initPlatforms
-        echo "${CURRENT_ALLOWED_PLATFORMS}"
+        echo "${ALLOWED_PLATFORMS}"
+        exit 0
+        ;;
+    --show-all-platforms=*)
+        initPlatforms
+        echo "$(expandPlatforms "${1#*=}")"
         exit 0
         ;;
     --github-proxy-mirror=*)

@@ -39,15 +39,22 @@ function printDepEnvHelp() {
 }
 
 function initDepPlatforms() {
-    if ! isCGOEnabled; then
-        deleteFromAllowedPlatforms "linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64"
-        deleteFromAllowedPlatforms "windows/386,windows/arm"
-    fi
+    clearAllowedPlatforms
+
+    addAllowedPlatforms "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
+    addAllowedPlatforms "darwin/amd64,darwin/arm64"
+    addAllowedPlatforms "windows/386,windows/amd64,windows/arm64"
+    addAllowedPlatforms "freebsd/386,freebsd/amd64,freebsd/arm,freebsd/arm64"
+    addAllowedPlatforms "netbsd/amd64"
+    addAllowedPlatforms "openbsd/amd64,openbsd/arm64"
+
+    addAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
 }
 
 function initDep() {
     setDefault "VERSION" "dev"
     VERSION="$(echo "$VERSION" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
+    echo -e "${COLOR_LIGHT_BLUE}Version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${VERSION}${COLOR_RESET}"
     if [[ "${VERSION}" != "dev" ]] && [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta.*|-rc.*|-alpha.*)?$ ]]; then
         echo -e "${COLOR_LIGHT_RED}Version format error: ${VERSION}${COLOR_RESET}"
         return 1
@@ -59,8 +66,6 @@ function initDep() {
     setDefault "WEB_REPO" "${repo_owner}/synctv-web"
     setDefault "SKIP_INIT_WEB" ""
 
-    echo -e "${COLOR_LIGHT_BLUE}Version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${VERSION}${COLOR_RESET}"
-
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.Version=${VERSION}'"
     setDefault "WEB_VERSION" "${VERSION}"
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.WebVersion=${WEB_VERSION}'"
@@ -70,6 +75,8 @@ function initDep() {
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.GitCommit=${git_commit}'"
 
     if [[ -z "${SKIP_INIT_WEB}" ]] && [[ -n "${WEB_VERSION}" ]]; then
+        echo -e "${COLOR_LIGHT_BLUE}Web repository:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${WEB_REPO}${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_BLUE}Web version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${WEB_VERSION}${COLOR_RESET}"
         downloadAndUnzip "https://github.com/${WEB_REPO}/releases/download/${WEB_VERSION}/dist.tar.gz" "${source_dir}/public/dist"
     fi
 
