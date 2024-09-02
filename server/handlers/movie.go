@@ -808,7 +808,20 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", utils.UA)
 	}
-	resp, err := uhc.Do(req)
+	cli := uhc.NewClient()
+	cli.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		req.Header.Del("Referer")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		req.Header.Set("Range", ctx.GetHeader("Range"))
+		req.Header.Set("Accept-Encoding", ctx.GetHeader("Accept-Encoding"))
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", utils.UA)
+		}
+		return nil
+	}
+	resp, err := cli.Do(req)
 	if err != nil {
 		return fmt.Errorf("request url error: %w", err)
 	}
@@ -1235,6 +1248,11 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 			case "":
 				ctx.Data(http.StatusOK, "audio/mpegurl", data.Ali.M3U8ListFile)
 				return
+			case "raw":
+				err := proxyURL(ctx, data.URL, nil)
+				if err != nil {
+					log.Errorf("proxy vendor movie error: %v", err)
+				}
 			case "subtitle":
 				idS := ctx.Query("id")
 				if idS == "" {
@@ -1472,6 +1490,18 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 		case cache.AlistProviderAli:
 			movie.MovieBase.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 			movie.MovieBase.Type = "m3u8"
+
+			rawStreamUrl := data.URL
+			if movie.MovieBase.Proxy {
+				rawStreamUrl = fmt.Sprintf("/api/movie/proxy/%s/%s?t=raw&token=%s", movie.RoomID, movie.ID, userToken)
+			}
+			movie.MovieBase.MoreSources = []*dbModel.MoreSource{
+				{
+					Name: "raw",
+					Type: utils.GetUrlExtension(movie.MovieBase.VendorInfo.Alist.Path),
+					Url:  rawStreamUrl,
+				},
+			}
 
 			for i, subt := range data.Subtitles {
 				if movie.MovieBase.Subtitles == nil {
