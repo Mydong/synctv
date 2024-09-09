@@ -114,8 +114,6 @@ func Users(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
-
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
 	switch ctx.Query("role") {
@@ -129,25 +127,6 @@ func Users(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereRole(dbModel.RoleBanned))
 	case "root":
 		scopes = append(scopes, db.WhereRole(dbModel.RoleRoot))
-	}
-
-	switch ctx.DefaultQuery("sort", "name") {
-	case "createdAt":
-		if desc {
-			scopes = append(scopes, db.OrderByCreatedAtDesc)
-		} else {
-			scopes = append(scopes, db.OrderByCreatedAtAsc)
-		}
-	case "name":
-		if desc {
-			scopes = append(scopes, db.OrderByDesc("username"))
-		} else {
-			scopes = append(scopes, db.OrderByAsc("username"))
-		}
-	default:
-		log.Error("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
-		return
 	}
 
 	if keyword := ctx.Query("keyword"); keyword != "" {
@@ -178,6 +157,26 @@ func Users(ctx *gin.Context) {
 	if err != nil {
 		log.WithError(err).Error("get all user count error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	switch ctx.DefaultQuery("sort", "name") {
+	case "createdAt":
+		if desc {
+			scopes = append(scopes, db.OrderByCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("username"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("username"))
+		}
+	default:
+		log.Error("not support sort")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
 
@@ -218,8 +217,6 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
-
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
 	switch ctx.DefaultQuery("status", "active") {
@@ -238,25 +235,6 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereRoomMemberRole(dbModel.RoomMemberRoleMember))
 	case "creator":
 		scopes = append(scopes, db.WhereRoomMemberRole(dbModel.RoomMemberRoleCreator))
-	}
-
-	switch ctx.DefaultQuery("sort", "name") {
-	case "join":
-		if desc {
-			scopes = append(scopes, db.OrderByUsersCreatedAtDesc)
-		} else {
-			scopes = append(scopes, db.OrderByUsersCreatedAtAsc)
-		}
-	case "name":
-		if desc {
-			scopes = append(scopes, db.OrderByDesc("username"))
-		} else {
-			scopes = append(scopes, db.OrderByAsc("username"))
-		}
-	default:
-		log.Errorf("get room users failed: not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
-		return
 	}
 
 	if keyword := ctx.Query("keyword"); keyword != "" {
@@ -297,6 +275,26 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 		return
 	}
 
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	switch ctx.DefaultQuery("sort", "name") {
+	case "join":
+		if desc {
+			scopes = append(scopes, db.OrderByUsersCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByUsersCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("username"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("username"))
+		}
+	default:
+		log.Errorf("get room users failed: not support sort")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
+		return
+	}
+
 	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
@@ -313,6 +311,10 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembersResp {
 	resp := make([]*model.RoomMembersResp, len(us))
 	for i, v := range us {
+		permissions := v.RoomMembers[0].Permissions
+		if room.IsGuest(v.ID) {
+			permissions = room.Settings.GuestPermissions
+		}
 		resp[i] = &model.RoomMembersResp{
 			UserID:           v.ID,
 			Username:         v.Username,
@@ -321,7 +323,7 @@ func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembe
 			Role:             v.RoomMembers[0].Role,
 			Status:           v.RoomMembers[0].Status,
 			RoomID:           v.RoomMembers[0].RoomID,
-			Permissions:      v.RoomMembers[0].Permissions,
+			Permissions:      permissions,
 			AdminPermissions: v.RoomMembers[0].AdminPermissions,
 		}
 	}
@@ -450,8 +452,6 @@ func Rooms(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
-
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
 	switch ctx.Query("status") {
@@ -461,25 +461,6 @@ func Rooms(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusPending))
 	case "banned":
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
-	}
-
-	switch ctx.DefaultQuery("sort", "name") {
-	case "createdAt":
-		if desc {
-			scopes = append(scopes, db.OrderByCreatedAtDesc)
-		} else {
-			scopes = append(scopes, db.OrderByCreatedAtAsc)
-		}
-	case "name":
-		if desc {
-			scopes = append(scopes, db.OrderByDesc("name"))
-		} else {
-			scopes = append(scopes, db.OrderByAsc("name"))
-		}
-	default:
-		log.Error("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
-		return
 	}
 
 	if keyword := ctx.Query("keyword"); keyword != "" {
@@ -517,6 +498,26 @@ func Rooms(ctx *gin.Context) {
 		return
 	}
 
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	switch ctx.DefaultQuery("sort", "name") {
+	case "createdAt":
+		if desc {
+			scopes = append(scopes, db.OrderByCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("name"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("name"))
+		}
+	default:
+		log.Error("not support sort")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
+		return
+	}
+
 	list, err := genRoomListResp(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.WithError(err).Error("gen room list resp error")
@@ -546,8 +547,6 @@ func GetUserRooms(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
-
 	scopes := []func(db *gorm.DB) *gorm.DB{
 		db.WhereCreatorID(id),
 	}
@@ -559,25 +558,6 @@ func GetUserRooms(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusPending))
 	case "banned":
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
-	}
-
-	switch ctx.DefaultQuery("sort", "name") {
-	case "createdAt":
-		if desc {
-			scopes = append(scopes, db.OrderByCreatedAtDesc)
-		} else {
-			scopes = append(scopes, db.OrderByCreatedAtAsc)
-		}
-	case "name":
-		if desc {
-			scopes = append(scopes, db.OrderByDesc("name"))
-		} else {
-			scopes = append(scopes, db.OrderByAsc("name"))
-		}
-	default:
-		log.Error("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
-		return
 	}
 
 	if keyword := ctx.Query("keyword"); keyword != "" {
@@ -596,6 +576,26 @@ func GetUserRooms(ctx *gin.Context) {
 	if err != nil {
 		log.WithError(err).Error("get all rooms count error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	switch ctx.DefaultQuery("sort", "name") {
+	case "createdAt":
+		if desc {
+			scopes = append(scopes, db.OrderByCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("name"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("name"))
+		}
+	default:
+		log.Error("not support sort")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
 
